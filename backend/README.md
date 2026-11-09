@@ -1,6 +1,6 @@
 # Backend
 
-O backend usa Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL. O value object `Money` e seus testes unitários já existem; as operações financeiras e os workers ainda não foram implementados.
+O backend usa Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL. Os componentes de domínio `Money` e `Wallet` e seus testes unitários já existem; as operações financeiras e os workers ainda não foram implementados.
 
 ## Configurar
 
@@ -33,4 +33,4 @@ O executor usa uma transação PostgreSQL e um advisory lock para evitar que ins
 
 ## Estado da implementação
 
-`src/domain/money.ts` representa dinheiro como centavos `BigInt`, sem ponto flutuante. Os testes de `src/domain/money.spec.ts` cobrem precisão decimal, validação, imutabilidade e conflito de moeda. O próximo componente de domínio será a wallet; o processamento das apostas continua pendente.
+`src/domain/money.ts` representa dinheiro como centavos `BigInt`, sem ponto flutuante. `src/domain/wallet.ts` mantém saldo não negativo e avança uma versão em cada crédito ou débito aceito. Os testes de domínio cobrem precisão decimal, validação monetária, moeda, saldo e versionamento. O processamento das apostas continua pendente.

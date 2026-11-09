@@ -2,7 +2,7 @@
 
 ## Estado e escopo
 
-Este documento registra as decisões que devem orientar a implementação do desafio. A infraestrutura está preparada e o value object `Money` já foi implementado. Os casos de uso financeiros e os workers ainda não foram implementados.
+Este documento registra as decisões que devem orientar a implementação do desafio. A infraestrutura está preparada e os componentes de domínio `Money` e `Wallet` já foram implementados. Os casos de uso financeiros e os workers ainda não foram implementados.
 
 O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira.
 
@@ -19,7 +19,7 @@ O objetivo é processar operações de apostas de múltiplos provedores com entr
 
 As dependências devem apontar para dentro, em direção ao domínio:
 
-1. **Domínio:** `Money` já existe; Wallet, WagerTransaction, WalletLedgerEntry e demais invariantes serão adicionados sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
+1. **Domínio:** `Money` e `Wallet` já existem; WagerTransaction, WalletLedgerEntry e demais invariantes serão adicionados sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
 2. **Aplicação:** casos de uso que coordenam validação, transação financeira, idempotência, publicação de eventos e consultas.
 3. **Infraestrutura:** repositórios MikroORM, transações PostgreSQL, clientes e workers SQS, inbox/outbox e observabilidade.
 4. **Apresentação:** controllers HTTP, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
@@ -31,6 +31,8 @@ O domínio não deve conhecer detalhes de transporte ou persistência. A aplica�
 Valores entram e saem da API como strings decimais, por exemplo `"25.00"`. O `Money` implementado armazena centavos em `BigInt`, sem converter dinheiro para `number` ou ponto flutuante, e serializa sempre com duas casas. Sua faixa respeita `numeric(20, 2)`, que é o tipo usado no schema inicial do PostgreSQL; o banco nunca usa `real` ou `double precision` para valores monetários.
 
 `Money` é imutável, valida escala e código de moeda e rejeita valores negativos nos contratos de criação. Operações do domínio, como `negate` e `subtract`, podem produzir negativos sem alterar a instância original. A moeda permanece parte do modelo para validar incompatibilidades, mesmo que o escopo inicial use somente BRL.
+
+`Wallet` é o aggregate que associa identificador e jogador a uma moeda, saldo e versão. A abertura começa com saldo zero e versão zero; crédito e débito aceitam somente valores positivos da mesma moeda e avançam a versão uma vez por alteração aceita. Débito acima do saldo é rejeitado sem alterar estado. A versão é um inteiro seguro não negativo, restaurado junto com os demais dados persistidos; o mecanismo concorrente entre instâncias continuará sendo responsabilidade da transação PostgreSQL.
 
 ## Transação financeira e concorrência
 
@@ -89,5 +91,5 @@ Os testes unitários de `Money` já cobrem formato decimal, precisão exata, ent
 - Limite de tentativas e TTL para referências pendentes.
 - Taxonomia completa de failure codes e mapeamento de status HTTP.
 - Política de retry/backoff para consumidores e publishers.
-- Estratégia concreta de versionamento da wallet.
+- Integração do versionamento da wallet com a gravação concorrente no PostgreSQL.
 - Autenticação externa, caso seja implementada.
