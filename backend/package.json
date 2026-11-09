@@ -19,7 +19,9 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "db:migrate": "bun run src/migrations/runner.ts up",
+    "db:migrate:down": "bun run src/migrations/runner.ts down"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1164.0",

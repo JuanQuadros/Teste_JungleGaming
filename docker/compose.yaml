@@ -1,22 +1,61 @@
 services:
+  # Serviço que simula os serviços AWS localmente.
   localstack:
     image: localstack/localstack:2026.10.5
     container_name: jungle-localstack
-
+    restart: unless-stopped
     ports:
-      # Disponibiliza o LocalStack apenas na máquina local
+      # Disponibiliza o LocalStack apenas na máquina local.
       - "127.0.0.1:4566:4566"
-
     environment:
-      # Serviços AWS que vamos simular
+      # Serviços AWS que vamos simular.
       SERVICES: sqs,sns,s3,secretsmanager
 
-      # Token de autenticação guardado no .env
+      # Token de autenticação guardado no arquivo .env.
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?Token não configurado}
-
     volumes:
-      # Preserva os dados mesmo após reiniciar o container
+      # Preserva os dados do LocalStack.
       - localstack_data:/var/lib/localstack
+      # Cria as filas FIFO durante a inicialização local.
+      - ./localstack/init:/etc/localstack/init/ready.d:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Check SQS directly; the LocalStack image does not include curl.
+      test: ["CMD-SHELL", "awslocal sqs list-queues --output text >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
+  # Banco de dados PostgreSQL do Jungle Gaming.
+  postgres:
+    image: postgres:18
+    container_name: jungle-postgres
+    restart: unless-stopped
+    ports:
+      # Disponibiliza o PostgreSQL somente na máquina local.
+      - "127.0.0.1:5432:5432"
+    environment:
+      # Nome do banco de dados.
+      POSTGRES_DB: ${POSTGRES_DB:?Banco não configurado}
+
+      # Usuário utilizado pelo backend.
+      POSTGRES_USER: ${POSTGRES_USER:?Usuário não configurado}
+
+      # Senha protegida no arquivo .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Senha não configurada}
+    volumes:
+      # Persiste os dados do PostgreSQL 18.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      # Verifica se o PostgreSQL está aceitando conexões.
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Volumes persistentes dos serviços.
 volumes:
   localstack_data:
+  postgres_data:
