@@ -1,0 +1,93 @@
+# Arquitetura — Jungle Gaming
+
+## Estado e escopo
+
+Este documento registra as decisões que devem orientar a implementação do desafio. O repositório está atualmente na fase de infraestrutura e organização. A lógica financeira e os workers ainda não foram implementados.
+
+O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira.
+
+## Stack
+
+- Bun 1.x como runtime, gerenciador de pacotes e executor de testes.
+- TypeScript em modo estrito e NestJS para a aplicação HTTP e composição de módulos.
+- PostgreSQL como autoridade para saldo, idempotência, ledger, inbox e outbox.
+- MikroORM para conexão e persistência; migrations versionadas para mudanças de schema.
+- AWS SQS, executado localmente pelo LocalStack, para processamento assíncrono.
+- Docker Compose para PostgreSQL e LocalStack no ambiente de desenvolvimento.
+
+## Limites entre camadas
+
+As dependências devem apontar para dentro, em direção ao domínio:
+
+1. **Domínio:** Money, Wallet, WagerTransaction, WalletLedgerEntry e regras/invariantes puras. Não depende de NestJS, MikroORM, SQS ou tipos monetários do banco.
+2. **Aplicação:** casos de uso que coordenam validação, transação financeira, idempotência, publicação de eventos e consultas.
+3. **Infraestrutura:** repositórios MikroORM, transações PostgreSQL, clientes e workers SQS, inbox/outbox e observabilidade.
+4. **Apresentação:** controllers HTTP, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
+
+O domínio não deve conhecer detalhes de transporte ou persistência. A aplicação coordena portas; a infraestrutura implementa essas portas.
+
+## Representação monetária
+
+Valores entram e saem da API como strings decimais com duas casas, por exemplo `"25.00"`. O domínio fará aritmética decimal exata por meio de uma biblioteca decimal ou de centavos inteiros encapsulados, sem converter dinheiro para `number` ou ponto flutuante. No PostgreSQL, os valores serão armazenados em `numeric`, nunca em `real` ou `double precision`.
+
+`Money` será imutável e validará escala, moeda e formato. A moeda permanece parte do modelo para permitir validar incompatibilidades, mesmo que o escopo inicial use somente BRL.
+
+## Transação financeira e concorrência
+
+O PostgreSQL é a autoridade final para concorrência e invariantes. A unidade de serialização é `walletId`; não haverá lock global.
+
+**Estratégia proposta:** dentro de uma transação SQL, bloquear a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`), validar o saldo e referências, gravar a transação e o ledger, atualizar o saldo/versionamento e inserir os eventos na outbox. A transação inteira confirma ou reverte em conjunto. Isso serializa operações concorrentes da mesma wallet e permite que wallets diferentes avancem em paralelo em múltiplas instâncias.
+
+Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação e imutabilidade do ledger. A consistência entre o saldo materializado e a soma do ledger deve ser mantida por cada caso de uso transacional e conferida por reconciliação.
+
+## Idempotência e identidade de transação
+
+O header `Idempotency-Key` é a fonte da verdade e deve ter unicidade persistente no banco. O hash será SHA-256 de uma representação JSON canônica dos campos de negócio, com chaves ordenadas; metadados de transporte não participam do hash.
+
+- Mesma chave e mesmo hash: retornar a resposta original como replay.
+- Mesma chave e hash diferente: responder conflito, sem alterar saldo.
+- Identidade externa: unicidade por `(providerId, externalTransactionId)`.
+
+Chaves em memória e deduplicação do broker são apenas otimizações, nunca garantias.
+
+## Referências e transições fora de ordem
+
+BET, WIN, LOSS, REFUND e ROLLBACK serão tratados por um caso de uso compartilhado pela entrada HTTP e pelo consumidor SQS. REFUND e ROLLBACK exigem referência válida do mesmo provedor, jogador, wallet, moeda e rodada. Referência ainda ausente produz `PENDING_REFERENCE`, sem movimento de saldo, para reprocessamento com backoff e limite documentado.
+
+Estados terminais, rejeições auditáveis e códigos de falha estáveis serão definidos no domínio. Reversões não podem acontecer mais de uma vez nem tornar o saldo negativo.
+
+## SQS, inbox e outbox
+
+O consumidor grava `(consumerName, messageId)` na inbox na mesma transação SQL que processa a operação. O ack ocorre somente depois do commit. Redelivery não repete efeitos; erros de negócio são terminais, falhas transitórias são tentadas novamente e falhas permanentes/limite excedido seguem para a DLQ.
+
+Os eventos de integração são inseridos na outbox dentro da transação financeira. Publishers concorrentes reservam registros pendentes no banco, publicam somente após o commit original e marcam sucesso ou agendam retry com backoff. Publicação duplicada é esperada e deve ser segura para consumidores.
+
+Eventos mínimos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference` e `WalletBalanceChanged` somente quando o saldo muda.
+
+## API, autenticação e health checks
+
+Controllers HTTP convertem contratos externos para casos de uso e traduzem erros para respostas estáveis. Payload inválido, conflito de idempotência, rejeição de negócio, processamento pendente e falha transitória devem ser distinguíveis.
+
+Autenticação não vale pontos no desafio e é opcional. A decisão atual é não implementá-la nesta etapa. Se continuar fora do escopo, documentar o desenho futuro e deixar um ponto de extensão para identidade de provedor/guard. Não criar autenticação própria com tabela e hash de senha. Health checks ficam abertos; mensagens de fila são canal interno confiável, mas ainda passam pelas validações do domínio.
+
+`/health/live` verifica somente se o processo responde. `/health/ready` verifica PostgreSQL e as filas SQS necessárias.
+
+## Migrations e estado atual do banco
+
+Migrations são versionadas, transacionais e reversíveis. O executor atual guarda versões em `schema_migrations` e usa advisory lock PostgreSQL para serializar execuções concorrentes.
+
+A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox, incluindo constraints estruturais. Ela não implementa os casos de uso financeiros nem substitui futuras entidades, repositórios ou regras do domínio.
+
+## Observabilidade e testes
+
+Logs estruturados devem incluir correlação, messageId, transactionId, walletId e providerId, sem registrar dados sensíveis ou valores financeiros completos. Métricas mínimas: transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock, atraso da outbox e latência.
+
+Testes devem cobrir unidade do domínio, integração real com PostgreSQL e LocalStack, paralelismo real, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+
+## Decisões ainda revisáveis
+
+- Limite de tentativas e TTL para referências pendentes.
+- Taxonomia completa de failure codes e mapeamento de status HTTP.
+- Política de retry/backoff para consumidores e publishers.
+- Biblioteca decimal e estratégia concreta de versionamento da wallet.
+- Autenticação externa, caso seja implementada.

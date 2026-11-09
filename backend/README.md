@@ -1,18 +1,20 @@
-# Backend local setup
+# Backend
 
-## Start the local services
+O backend usa Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL. A lógica financeira do desafio ainda não foi implementada; esta etapa cobre configuração, conexão e estrutura inicial do banco.
 
-From the repository root, start PostgreSQL and LocalStack (the Compose environment file is kept under `docker/`):
+## Configurar
+
+Na raiz do repositório, copie `docker/.env.example` para `docker/.env` e informe um token válido do LocalStack. Depois copie `backend/.env.example` para `backend/.env`. Os valores PostgreSQL dos dois arquivos devem corresponder.
+
+## Executar
+
+Na raiz do repositório:
 
 ```powershell
 docker compose --env-file docker/.env -f docker/compose.yaml up -d
 ```
 
-Wait for both services to become healthy. LocalStack creates `wager-transactions.fifo` and `wager-transactions-dlq.fifo` during startup.
-
-## Configure and run the API
-
-Copy `.env.example` to `.env` in this directory and set the PostgreSQL values to match `docker/.env`. The local `.env` is ignored by Git.
+Na pasta `backend/`:
 
 ```powershell
 bun install
@@ -20,8 +22,11 @@ bun run db:migrate
 bun run start:dev
 ```
 
-The API listens on port 3000 by default. `GET /health/live` checks the process, and `GET /health/ready` checks PostgreSQL.
+`GET /health/live` verifica se a API responde. `GET /health/ready` consulta PostgreSQL e as duas filas SQS.
 
 ## Migrations
 
-Migrations are versioned and reversible. Apply the initial schema with `bun run db:migrate`; revert it with `bun run db:migrate:down`. Each migration and its registry update run in one PostgreSQL transaction guarded by an advisory lock.
+- `bun run db:migrate` aplica migrations pendentes.
+- `bun run db:migrate:down` reverte a migration mais recente.
+
+O executor usa uma transação PostgreSQL e um advisory lock para evitar que instâncias concorrentes executem migrations ao mesmo tempo.

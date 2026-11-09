@@ -4,18 +4,18 @@ import { down, name, up } from './001-initial-structure.js';
 
 const migrationLock = 741_904_202;
 
-// Run one versioned migration at a time and keep its SQL plus registry update atomic.
+// Executa uma migration versionada por vez e mantém o SQL e o registro na mesma transação.
 async function run(direction: 'up' | 'down') {
   const orm = await MikroORM.init(mikroOrmConfig);
 
   try {
     await orm.em.transactional(async (em) => {
       const connection = em.getConnection();
-      // Pass the active transaction context to every raw SQL statement.
+      // Encaminha o contexto da transação ativa para cada comando SQL.
       const execute = (sql: string, params: unknown[] = []) =>
         connection.execute(sql, params, 'all', em.getTransactionContext());
 
-      // This transaction-scoped lock prevents two app instances from migrating together.
+      // Este bloqueio transacional impede duas instâncias de executar migrations ao mesmo tempo.
       await execute('select pg_advisory_xact_lock(?)', [migrationLock]);
       await execute(`
         create table if not exists schema_migrations (
@@ -24,7 +24,7 @@ async function run(direction: 'up' | 'down') {
         )
       `);
 
-      // The registry makes applying the same migration repeatedly safe.
+      // O registro permite repetir a execução sem reaplicar uma migration já concluída.
       const result = await execute(
         'select name from schema_migrations where name = ?',
         [name],

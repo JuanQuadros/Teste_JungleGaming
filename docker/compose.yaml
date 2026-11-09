@@ -22,7 +22,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      # Check SQS directly; the LocalStack image does not include curl.
+      # Verifica o SQS diretamente; a imagem do LocalStack não inclui o curl.
       test: ["CMD-SHELL", "awslocal sqs list-queues --output text >/dev/null"]
       interval: 10s
       timeout: 5s

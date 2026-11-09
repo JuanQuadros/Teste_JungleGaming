@@ -1,7 +1,7 @@
 export const name = '001-initial-structure';
 
 export const up = [
-  // Store exact decimal balances and enforce one wallet per player and currency.
+  // Armazena saldos decimais exatos e garante uma carteira por jogador e moeda.
   `create table wallets (
     id uuid primary key default gen_random_uuid(),
     player_id uuid not null,
@@ -12,7 +12,7 @@ export const up = [
     updated_at timestamptz not null default now(),
     unique (player_id, currency)
   )`,
-  // Persist request identity and outcome so retries can be resolved by the database.
+  // Persiste a identidade e o resultado da requisição para resolver novas tentativas pelo banco.
   `create table wager_transactions (
     id uuid primary key default gen_random_uuid(),
     provider_id text not null,
@@ -34,11 +34,11 @@ export const up = [
     processed_at timestamptz,
     unique (provider_id, external_transaction_id)
   )`,
-  // Support efficient discovery of transactions waiting for out-of-order references.
+  // Facilita a busca por transações que aguardam referências recebidas fora de ordem.
   `create index wager_transactions_pending_reference_idx
     on wager_transactions (created_at)
     where status = 'PENDING_REFERENCE'`,
-  // Keep an auditable before/after record and enforce its arithmetic in PostgreSQL.
+  // Mantém o registro auditável dos saldos anterior e posterior e valida a operação no PostgreSQL.
   `create table wallet_ledger_entries (
     id uuid primary key default gen_random_uuid(),
     wallet_id uuid not null references wallets(id),
@@ -54,7 +54,7 @@ export const up = [
       (direction = 'DEBIT' and balance_after = balance_before - amount)
     )
   )`,
-  // Make the audit ledger immutable even when a caller bypasses application code.
+  // Impede alterações no ledger mesmo quando uma chamada ignora o código da aplicação.
   `create function prevent_ledger_mutation() returns trigger language plpgsql as $$
     begin
       raise exception 'wallet ledger entries are immutable';
@@ -63,7 +63,7 @@ export const up = [
   `create trigger wallet_ledger_entries_immutable
     before update or delete on wallet_ledger_entries
     for each row execute function prevent_ledger_mutation()`,
-  // Record queue deliveries durably to deduplicate redelivered messages.
+  // Registra entregas da fila de forma persistente para deduplicar mensagens reenviadas.
   `create table inbox_messages (
     consumer_name text not null,
     message_id text not null,
@@ -72,7 +72,7 @@ export const up = [
     processed_at timestamptz,
     primary key (consumer_name, message_id)
   )`,
-  // Persist integration events for publication after the financial commit.
+  // Persiste eventos de integração para publicação após a confirmação da transação financeira.
   `create table outbox_messages (
     id uuid primary key default gen_random_uuid(),
     aggregate_id uuid not null,
@@ -89,7 +89,7 @@ export const up = [
 ];
 
 export const down = [
-  // Drop dependent objects before their parent tables and helper function.
+  // Remove os objetos dependentes antes das tabelas relacionadas e da função auxiliar.
   'drop table outbox_messages',
   'drop table inbox_messages',
   'drop trigger wallet_ledger_entries_immutable on wallet_ledger_entries',
