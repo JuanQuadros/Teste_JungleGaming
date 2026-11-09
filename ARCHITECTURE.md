@@ -2,7 +2,7 @@
 
 ## Estado e escopo
 
-Este documento registra as decisões que devem orientar a implementação do desafio. O repositório está atualmente na fase de infraestrutura e organização. A lógica financeira e os workers ainda não foram implementados.
+Este documento registra as decisões que devem orientar a implementação do desafio. A infraestrutura está preparada e o value object `Money` já foi implementado. Os casos de uso financeiros e os workers ainda não foram implementados.
 
 O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira.
 
@@ -19,7 +19,7 @@ O objetivo é processar operações de apostas de múltiplos provedores com entr
 
 As dependências devem apontar para dentro, em direção ao domínio:
 
-1. **Domínio:** Money, Wallet, WagerTransaction, WalletLedgerEntry e regras/invariantes puras. Não depende de NestJS, MikroORM, SQS ou tipos monetários do banco.
+1. **Domínio:** `Money` já existe; Wallet, WagerTransaction, WalletLedgerEntry e demais invariantes serão adicionados sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
 2. **Aplicação:** casos de uso que coordenam validação, transação financeira, idempotência, publicação de eventos e consultas.
 3. **Infraestrutura:** repositórios MikroORM, transações PostgreSQL, clientes e workers SQS, inbox/outbox e observabilidade.
 4. **Apresentação:** controllers HTTP, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
@@ -28,9 +28,9 @@ O domínio não deve conhecer detalhes de transporte ou persistência. A aplica�
 
 ## Representação monetária
 
-Valores entram e saem da API como strings decimais com duas casas, por exemplo `"25.00"`. O domínio fará aritmética decimal exata por meio de uma biblioteca decimal ou de centavos inteiros encapsulados, sem converter dinheiro para `number` ou ponto flutuante. No PostgreSQL, os valores serão armazenados em `numeric`, nunca em `real` ou `double precision`.
+Valores entram e saem da API como strings decimais, por exemplo `"25.00"`. O `Money` implementado armazena centavos em `BigInt`, sem converter dinheiro para `number` ou ponto flutuante, e serializa sempre com duas casas. Sua faixa respeita `numeric(20, 2)`, que é o tipo usado no schema inicial do PostgreSQL; o banco nunca usa `real` ou `double precision` para valores monetários.
 
-`Money` será imutável e validará escala, moeda e formato. A moeda permanece parte do modelo para permitir validar incompatibilidades, mesmo que o escopo inicial use somente BRL.
+`Money` é imutável, valida escala e código de moeda e rejeita valores negativos nos contratos de criação. Operações do domínio, como `negate` e `subtract`, podem produzir negativos sem alterar a instância original. A moeda permanece parte do modelo para validar incompatibilidades, mesmo que o escopo inicial use somente BRL.
 
 ## Transação financeira e concorrência
 
@@ -82,12 +82,12 @@ A migration `001-initial-structure` cria a estrutura inicial de wallets, transa�
 
 Logs estruturados devem incluir correlação, messageId, transactionId, walletId e providerId, sem registrar dados sensíveis ou valores financeiros completos. Métricas mínimas: transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock, atraso da outbox e latência.
 
-Testes devem cobrir unidade do domínio, integração real com PostgreSQL e LocalStack, paralelismo real, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+Os testes unitários de `Money` já cobrem formato decimal, precisão exata, entradas inválidas, imutabilidade e conflito de moeda. Ainda serão necessários testes dos demais elementos do domínio, integração real com PostgreSQL e LocalStack, paralelismo, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
 
 ## Decisões ainda revisáveis
 
 - Limite de tentativas e TTL para referências pendentes.
 - Taxonomia completa de failure codes e mapeamento de status HTTP.
 - Política de retry/backoff para consumidores e publishers.
-- Biblioteca decimal e estratégia concreta de versionamento da wallet.
+- Estratégia concreta de versionamento da wallet.
 - Autenticação externa, caso seja implementada.

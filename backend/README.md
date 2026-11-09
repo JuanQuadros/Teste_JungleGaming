@@ -1,6 +1,6 @@
 # Backend
 
-O backend usa Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL. A lógica financeira do desafio ainda não foi implementada; esta etapa cobre configuração, conexão e estrutura inicial do banco.
+O backend usa Bun, TypeScript estrito, NestJS, MikroORM e PostgreSQL. O value object `Money` e seus testes unitários já existem; as operações financeiras e os workers ainda não foram implementados.
 
 ## Configurar
 
@@ -30,3 +30,7 @@ bun run start:dev
 - `bun run db:migrate:down` reverte a migration mais recente.
 
 O executor usa uma transação PostgreSQL e um advisory lock para evitar que instâncias concorrentes executem migrations ao mesmo tempo.
+
+## Estado da implementação
+
+`src/domain/money.ts` representa dinheiro como centavos `BigInt`, sem ponto flutuante. Os testes de `src/domain/money.spec.ts` cobrem precisão decimal, validação, imutabilidade e conflito de moeda. O próximo componente de domínio será a wallet; o processamento das apostas continua pendente.
