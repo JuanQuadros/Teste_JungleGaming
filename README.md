@@ -71,7 +71,7 @@ O endpoint de prontidão responde somente quando PostgreSQL, fila de transaçõe
 
 ## Migrations
 
-`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. A migration inicial cria a estrutura base de wallets, transações, ledger, inbox e outbox; ela ainda não implementa as regras financeiras.
+`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. A migration inicial cria a estrutura base de wallets, transações, ledger, inbox e outbox; ela ainda não implementa as regras financeiras.
 
 ## Testes e compilação
 
@@ -88,7 +88,6 @@ Os testes de integração exigidos pelo desafio ainda serão adicionados quando 
 ## Documentação
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — decisões, limites e fluxos planejados da solução.
-- [backend/README.md](backend/README.md) — comandos focados no desenvolvimento do backend.
 
 ## Estado atual
 
