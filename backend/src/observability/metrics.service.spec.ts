@@ -39,4 +39,18 @@ describe('MetricsService', () => {
       'dependency="queue\\"\\\\\\nname"',
     );
   });
+
+  it('exporta contadores de reconciliações consistentes e divergentes', () => {
+    const metrics = new MetricsService();
+    metrics.recordWalletReconciliation(true);
+    metrics.recordWalletReconciliation(false);
+    metrics.recordWalletReconciliation(false);
+
+    expect(metrics.renderPrometheus()).toContain(
+      'wallet_reconciliations_total{result="consistent"} 1',
+    );
+    expect(metrics.renderPrometheus()).toContain(
+      'wallet_reconciliations_total{result="inconsistent"} 2',
+    );
+  });
 });

@@ -74,7 +74,9 @@ status e duração, sem registrar corpo ou valores financeiros. O cabeçalho
 `X-Correlation-Id` recebido é aceito somente com caracteres e tamanho válidos;
 caso contrário, a aplicação gera um UUID e devolve o identificador na resposta.
 O endpoint `GET /metrics` expõe métricas Prometheus para requisições HTTP,
-latência e verificações de dependências do readiness.
+latência, verificações de dependências do readiness e resultados de
+reconciliação de wallets. Divergências também geram log estruturado com a
+wallet, moeda, saldos comparados, diferença e quantidade de lançamentos.
 
 A API HTTP inclui:
 
@@ -84,6 +86,9 @@ A API HTTP inclui:
 - `GET /wallets/:walletId`: consulta saldo e versão.
 - `GET /wallets/:walletId/ledger?limit=50&cursor=...`: lista lançamentos com
   cursor opaco estável; `limit` aceita de 1 a 100.
+- `POST /wallets/:walletId/reconciliation`: compara o saldo da wallet com a
+  soma exata do ledger, informa diferença e quantidade de lançamentos, sem
+  corrigir divergências automaticamente.
 - `POST /wagering/transactions`: submete BET, WIN, LOSS, REFUND ou ROLLBACK com
   `Idempotency-Key`.
 - `GET /wagering/transactions/:transactionId` e
@@ -143,4 +148,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints HTTP e o 14 resolve referências ausentes com backoff e expiração auditável na outbox. Autenticação, publisher da outbox e processamento SQS ainda serão conectados.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints HTTP, o 14 resolve referências ausentes com backoff e expiração auditável na outbox, e o 17 compara o saldo da wallet ao ledger sem corrigir divergências. Autenticação, publisher da outbox e processamento SQS ainda serão conectados.

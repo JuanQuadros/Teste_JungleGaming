@@ -53,6 +53,12 @@ export class MetricsService {
     this.increment('health_dependency_checks_total', { dependency, status });
   }
 
+  recordWalletReconciliation(isConsistent: boolean): void {
+    this.increment('wallet_reconciliations_total', {
+      result: isConsistent ? 'consistent' : 'inconsistent',
+    });
+  }
+
   renderPrometheus(): string {
     const lines = [
       '# HELP http_server_requests_total Total de requisições HTTP concluídas.',
@@ -64,6 +70,9 @@ export class MetricsService {
       '# HELP health_dependency_checks_total Total de verificações de dependência do readiness.',
       '# TYPE health_dependency_checks_total counter',
       ...this.renderCounters('health_dependency_checks_total'),
+      '# HELP wallet_reconciliations_total Total de reconciliações de saldo de wallets.',
+      '# TYPE wallet_reconciliations_total counter',
+      ...this.renderCounters('wallet_reconciliations_total'),
     ];
     return `${lines.join('\n')}\n`;
   }
@@ -81,7 +90,9 @@ export class MetricsService {
   private renderCounters(name: string): string[] {
     return [...this.counters.values()]
       .filter((sample) => sample.name === name)
-      .map((sample) => this.renderSample(sample.name, sample.labels, sample.value));
+      .map((sample) =>
+        this.renderSample(sample.name, sample.labels, sample.value),
+      );
   }
 
   private renderHistogram(): string[] {
@@ -143,6 +154,9 @@ export class MetricsService {
   }
 
   private escapeLabel(value: string): string {
-    return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
+    return value
+      .replaceAll('\\', '\\\\')
+      .replaceAll('"', '\\"')
+      .replaceAll('\n', '\\n');
   }
 }

@@ -12,6 +12,7 @@ import {
   WAGER_TRANSACTION_REPOSITORY,
 } from '../../application/ports/persistence.repositories.js';
 import { CreateWalletUseCase } from '../../application/wallet-management/create-wallet.use-case.js';
+import { ReconcileWalletUseCase } from '../../application/wallet-management/reconcile-wallet.use-case.js';
 import { ProcessWagerTransactionUseCase } from '../../application/wager-processing/process-wager-transaction.use-case.js';
 import { RetryPendingReferencesUseCase } from '../../application/wager-processing/retry-pending-references.use-case.js';
 import { mikroOrmConfig } from '../../mikro-orm.config.js';
@@ -36,6 +37,7 @@ import {
   up as pendingReferenceRetriesUp,
 } from '../../migrations/005-pending-reference-retries.js';
 import { RequestContext } from '../../observability/request-context.js';
+import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 import { MikroOrmWalletTransactionUnitOfWork } from '../../infrastructure/persistence/mikro-orm-wallet-transaction.unit-of-work.js';
 import { MikroOrmWalletLedgerEntryRepository } from '../../infrastructure/persistence/repositories/mikro-orm-wallet-ledger-entry.repository.js';
@@ -110,6 +112,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       controllers: [WalletsController, WageringTransactionsController],
       providers: [
         CreateWalletUseCase,
+        ReconcileWalletUseCase,
         ProcessWagerTransactionUseCase,
         RetryPendingReferencesUseCase,
         {
@@ -137,6 +140,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
             new MikroOrmWalletLedgerEntryRepository(appOrm.em.fork()),
         },
         RequestContext,
+        MetricsService,
         StructuredLogger,
       ],
     }).compile();
@@ -209,6 +213,129 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .get(`/wallets/${emptyWallet.body.walletId}/ledger`)
       .expect(200);
     expect(emptyLedger.body).toEqual({ items: [], nextCursor: null });
+  });
+
+  it('reconciles the wallet balance against its immutable ledger', async () => {
+    const playerId = randomUUID();
+    const wallet = await request(app.getHttpServer())
+      .post('/wallets')
+      .send({ playerId, currency: 'BRL', initialBalance: '25.00' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `reconcile-bet-${randomUUID()}`)
+      .send(transactionBody(wallet.body.walletId, playerId, '5.00'))
+      .expect(200);
+
+    const reconciliation = await request(app.getHttpServer())
+      .post(`/wallets/${wallet.body.walletId}/reconciliation`)
+      .expect(201);
+    expect(reconciliation.body).toEqual({
+      walletId: wallet.body.walletId,
+      currency: 'BRL',
+      walletBalance: '20.00',
+      ledgerBalance: '20.00',
+      difference: '0.00',
+      isConsistent: true,
+      entriesVerified: 2,
+    });
+
+    const metrics = app.get(MetricsService).renderPrometheus();
+    expect(metrics).toContain(
+      'wallet_reconciliations_total{result="consistent"} 1',
+    );
+  });
+
+  it('reports a divergence without changing the wallet or ledger', async () => {
+    const playerId = randomUUID();
+    const wallet = await request(app.getHttpServer())
+      .post('/wallets')
+      .send({ playerId, currency: 'BRL', initialBalance: '25.00' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `reconcile-bet-${randomUUID()}`)
+      .send(transactionBody(wallet.body.walletId, playerId, '5.00'))
+      .expect(200);
+    await appOrm.em
+      .getConnection()
+      .execute(
+        `update "${schemaName}".wallets set balance = '23.00' where id = ?`,
+        [wallet.body.walletId],
+      );
+    const readLedgerSnapshot = () =>
+      appOrm.em.getConnection().execute(
+        `select
+          id,
+          transaction_id as "transactionId",
+          direction,
+          amount::text as amount,
+          currency,
+          balance_before::text as "balanceBefore",
+          balance_after::text as "balanceAfter",
+          reversal_of_transaction_id as "reversalOfTransactionId"
+         from "${schemaName}".wallet_ledger_entries
+         where wallet_id = ?
+         order by id`,
+        [wallet.body.walletId],
+      );
+    const ledgerBefore = await readLedgerSnapshot();
+
+    const reconciliation = await request(app.getHttpServer())
+      .post(`/wallets/${wallet.body.walletId}/reconciliation`)
+      .expect(201);
+    expect(reconciliation.body).toEqual({
+      walletId: wallet.body.walletId,
+      currency: 'BRL',
+      walletBalance: '23.00',
+      ledgerBalance: '20.00',
+      difference: '3.00',
+      isConsistent: false,
+      entriesVerified: 2,
+    });
+
+    const walletAfter = await request(app.getHttpServer())
+      .get(`/wallets/${wallet.body.walletId}`)
+      .expect(200);
+    const ledgerAfter = await readLedgerSnapshot();
+    expect(walletAfter.body.balance).toBe('23.00');
+    expect(walletAfter.body.version).toBe(2);
+    expect(ledgerAfter).toEqual(ledgerBefore);
+    const logErrorEvent = vi.spyOn(app.get(StructuredLogger), 'errorEvent');
+    expect(logErrorEvent).toHaveBeenCalledWith(
+      'wallet_reconciliation_inconsistent',
+      expect.objectContaining({
+        walletId: wallet.body.walletId,
+        walletBalance: '23.00',
+        ledgerBalance: '20.00',
+        difference: '3.00',
+        entriesVerified: 2,
+      }),
+    );
+    expect(app.get(MetricsService).renderPrometheus()).toContain(
+      'wallet_reconciliations_total{result="inconsistent"} 1',
+    );
+  });
+
+  it('treats a wallet with no ledger entries as a zero balance', async () => {
+    const wallet = await request(app.getHttpServer())
+      .post('/wallets')
+      .send({ playerId: randomUUID(), currency: 'BRL' })
+      .expect(201);
+
+    const reconciliation = await request(app.getHttpServer())
+      .post(`/wallets/${wallet.body.walletId}/reconciliation`)
+      .expect(201);
+
+    expect(reconciliation.body).toEqual({
+      walletId: wallet.body.walletId,
+      currency: 'BRL',
+      walletBalance: '0.00',
+      ledgerBalance: '0.00',
+      difference: '0.00',
+      isConsistent: true,
+      entriesVerified: 0,
+    });
   });
 
   it('submits idempotently and supports wallet, ledger, and transaction lookups', async () => {
