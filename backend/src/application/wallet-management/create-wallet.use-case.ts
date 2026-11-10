@@ -9,6 +9,7 @@ import {
 import { Wallet } from '../../domain/wallet.js';
 import {
   WALLET_CREATION_UNIT_OF_WORK,
+  type OutboxEvent,
   type WalletCreationUnitOfWorkPort,
 } from '../ports/persistence.repositories.js';
 
@@ -29,6 +30,7 @@ export class CreateWalletUseCase {
     const wallet = Wallet.open(randomUUID(), input.playerId, input.currency);
     let openingTransaction: WagerTransaction | null = null;
     let openingEntry: WalletLedgerEntry | null = null;
+    const outboxEvents: OutboxEvent[] = [];
 
     if (input.initialBalance.isPositive()) {
       wallet.credit(input.initialBalance);
@@ -63,9 +65,44 @@ export class CreateWalletUseCase {
         transaction: openingTransaction,
         balanceBefore: Money.zero(input.currency),
       });
+      outboxEvents.push(
+        {
+          id: randomUUID(),
+          aggregateId: openingTransaction.id,
+          eventType: 'WagerTransactionProcessed',
+          payload: {
+            transactionId: openingTransaction.id,
+            providerId: openingTransaction.providerId,
+            externalTransactionId: openingTransaction.externalTransactionId,
+            kind: openingTransaction.kind,
+            amount: openingTransaction.amount.toJSON().amount,
+            currency: openingTransaction.currency,
+            balance: wallet.balance.toJSON().amount,
+          },
+          occurredAt: new Date(),
+        },
+        {
+          id: randomUUID(),
+          aggregateId: wallet.id,
+          eventType: 'WalletBalanceChanged',
+          payload: {
+            walletId: wallet.id,
+            transactionId: openingTransaction.id,
+            currency: wallet.currency,
+            balanceBefore: Money.zero(input.currency).toJSON().amount,
+            balanceAfter: wallet.balance.toJSON().amount,
+          },
+          occurredAt: new Date(),
+        },
+      );
     }
 
-    await this.unitOfWork.create(wallet, openingTransaction, openingEntry);
+    await this.unitOfWork.create(
+      wallet,
+      openingTransaction,
+      openingEntry,
+      outboxEvents,
+    );
     return wallet;
   }
 }

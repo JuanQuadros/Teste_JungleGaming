@@ -33,8 +33,29 @@ export interface OutboxEvent {
   occurredAt: Date;
 }
 
+export interface PendingOutboxEvent extends OutboxEvent {
+  attempts: number;
+}
+
+export const OUTBOX_EVENT_REPOSITORY = Symbol('OUTBOX_EVENT_REPOSITORY');
+
 export interface OutboxEventRepositoryPort {
   insert(event: OutboxEvent): void;
+  claimDue(
+    now: Date,
+    leaseUntil: Date,
+    limit: number,
+  ): Promise<PendingOutboxEvent[]>;
+  markPublished(
+    id: string,
+    attempts: number,
+    publishedAt: Date,
+  ): Promise<boolean>;
+  scheduleRetry(
+    id: string,
+    attempts: number,
+    nextAttemptAt: Date,
+  ): Promise<boolean>;
 }
 
 export interface InboxMessage {
@@ -101,6 +122,7 @@ export interface WalletCreationUnitOfWorkPort {
     wallet: Wallet,
     openingTransaction: WagerTransaction | null,
     openingEntry: WalletLedgerEntry | null,
+    outboxEvents?: OutboxEvent[],
   ): Promise<void>;
 }
 

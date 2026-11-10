@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
 import type {
+  OutboxEvent,
   InboxMessage,
   WalletCreationUnitOfWorkPort,
   WalletTransactionContext,
@@ -33,6 +34,7 @@ export class MikroOrmWalletTransactionUnitOfWork
     wallet: Wallet,
     openingTransaction: WagerTransaction | null,
     openingEntry: WalletLedgerEntry | null,
+    outboxEvents: OutboxEvent[] = [],
   ): Promise<void> {
     try {
       await this.entityManager.transactional(async (em) => {
@@ -46,6 +48,8 @@ export class MikroOrmWalletTransactionUnitOfWork
           new MikroOrmWalletLedgerEntryRepository(em).insert(openingEntry);
           await em.flush();
         }
+        const outboxRepository = new MikroOrmOutboxEventRepository(em);
+        for (const event of outboxEvents) outboxRepository.insert(event);
       });
     } catch (error) {
       if (

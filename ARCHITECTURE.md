@@ -2,7 +2,7 @@
 
 ## Estado e escopo
 
-Este documento registra as decisões que orientam a implementação do desafio. A infraestrutura, os componentes de domínio, entidades, repositórios, processamento financeiro, endpoints HTTP e o consumidor SQS estão implementados. A API e o processamento financeiro usam transações SQL com lock por wallet; o publisher da outbox ainda aguarda integração.
+Este documento registra as decisões que orientam a implementação do desafio. A infraestrutura, os componentes de domínio, entidades, repositórios, processamento financeiro, endpoints HTTP, consumidor SQS e publisher da outbox estão implementados. A API e o processamento financeiro usam transações SQL com lock por wallet.
 
 O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira. A API HTTP e o consumidor SQS compartilham os mesmos casos de uso; o consumidor confirma a mensagem somente após a transação financeira e a inbox serem commitadas.
 
@@ -20,8 +20,8 @@ O objetivo é processar operações de apostas de múltiplos provedores com entr
 As dependências devem apontar para dentro, em direção ao domínio:
 
 1. **Domínio:** `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` existem sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
-2. **Aplicação:** portas de repositório definem como localizar e persistir os aggregates; casos de uso coordenam validação, transação financeira, idempotência e criação de wallet. Publicação de eventos ainda será integrada.
-3. **Infraestrutura:** entidades MikroORM mapeiam as tabelas financeiras, inbox e outbox. Repositórios MikroORM convertem as entidades para o domínio; transações PostgreSQL e migrations dão suporte ao processamento financeiro. O consumidor SQS processa mensagens FIFO com inbox persistente e ACK após commit; publisher da outbox e observabilidade de negócio ainda serão implementados.
+2. **Aplicação:** portas de repositório definem como localizar e persistir os aggregates; casos de uso coordenam validação, transação financeira, idempotência e criação de wallet.
+3. **Infraestrutura:** entidades MikroORM mapeiam as tabelas financeiras, inbox e outbox. Repositórios MikroORM convertem as entidades para o domínio; transações PostgreSQL e migrations dão suporte ao processamento financeiro. O consumidor SQS processa mensagens FIFO com inbox persistente e ACK após commit; o publisher entrega eventos da outbox com leases persistidos e retries.
 4. **Apresentação:** controllers HTTP para wallets, ledger e transações, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
 
 ## API HTTP
@@ -62,7 +62,7 @@ Entidades MikroORM guardam valores `NUMERIC(20, 2)` como strings decimais e mant
 
 O PostgreSQL é a autoridade final para concorrência e invariantes. A unidade de serialização é `walletId`; não haverá lock global.
 
-**Implementado nos marcos 10 e 11:** `MikroOrmWalletTransactionUnitOfWork` abre uma transação SQL, serializa a mesma chave de idempotência com advisory lock e, para operação nova, bloqueia a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`). O hash SHA-256 é calculado sobre os campos de negócio. Chave e hash iguais retornam a transação persistida sem repetir efeitos; chave igual com hash diferente gera conflito. Para novas operações, saldo, transação e ledger são gravados no mesmo Unit of Work. Erros técnicos revertem alterações; rejeições e pendências são persistidas sem movimento de saldo. Chaves e wallets diferentes podem avançar em paralelo. A outbox será conectada no marco 16.
+**Implementado nos marcos 10, 11 e 16:** `MikroOrmWalletTransactionUnitOfWork` abre uma transação SQL, serializa a mesma chave de idempotência com advisory lock e, para operação nova, bloqueia a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`). O hash SHA-256 é calculado sobre os campos de negócio. Chave e hash iguais retornam a transação persistida sem repetir efeitos; chave igual com hash diferente gera conflito. Para novas operações, saldo, transação, ledger e eventos de integração são gravados no mesmo Unit of Work. Erros técnicos revertem alterações; rejeições e pendências são persistidas sem movimento de saldo. Chaves e wallets diferentes podem avançar em paralelo.
 
 Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, exceto REFUND e ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. A reversão cria um novo lançamento oposto, sem alterar o original. A consistência entre o saldo materializado e a soma do ledger deve ser mantida por cada caso de uso transacional e conferida por reconciliação.
 
@@ -79,13 +79,13 @@ Migration 004 adiciona `response_balance` como valor monetário não negativo e 
 
 ## Referências e transições fora de ordem
 
-BET, WIN, LOSS, REFUND e ROLLBACK são tratados pelo caso de uso financeiro, já integrado à entrada HTTP; o consumidor SQS ainda será integrado. REFUND e ROLLBACK exigem referência válida do mesmo provedor, jogador, wallet, moeda e rodada. Referência ainda ausente produz `PENDING_REFERENCE`, sem movimento de saldo, para reprocessamento com backoff e limite documentado.
+BET, WIN, LOSS, REFUND e ROLLBACK são tratados pelo caso de uso financeiro, integrado às entradas HTTP e SQS. REFUND e ROLLBACK exigem referência válida do mesmo provedor, jogador, wallet, moeda e rodada. Referência ainda ausente produz `PENDING_REFERENCE`, sem movimento de saldo, para reprocessamento com backoff e limite documentado.
 
 O worker `PendingReferenceRetryWorker` varre pendências a cada segundo, com lotes de até 50 itens. A primeira tentativa é agendada para um segundo após a submissão pendente; são permitidos cinco retries, com esperas exponenciais de 2, 4, 8 e 16 segundos após os quatro primeiros retries sem referência. `reference_attempts` e `reference_next_attempt_at` são persistidos pela migration 005, portanto o agendamento sobrevive a reinícios. O lock de idempotência e o lock pessimista da wallet serializam cada retry com novas operações e com outros workers.
 
 Quando a referência aparece, o mesmo caso de uso financeiro valida seu estado processado, tipo elegível, lançamento original, valor integral e identidade de provedor, jogador, wallet, moeda e rodada antes de aplicar a reversão. O aggregate existente é atualizado; a operação não é inserida novamente. Após cinco retries sem referência, a transação é rejeitada com `REFERENCE_NOT_FOUND`, sem movimento no saldo/ledger, e `WagerTransactionReferenceExpired` é inserido na outbox no mesmo commit. Assim, a transição terminal e o evento são atômicos e um retry concorrente não duplica nem o evento nem um lançamento.
 
-`WagerTransaction` começa em `PENDING` e pode aguardar referência, voltar ao processamento ou encerrar como `PROCESSED`, `REJECTED` ou `FAILED`. Estados terminais não aceitam novas transições. A reidratação valida e restaura o estado persistido diretamente, sem repetir o histórico de transições. Rejeições possuem códigos estáveis para saldo insuficiente, referência inválida e reversão que causaria saldo negativo; falhas técnicas usam `PROCESSING_FAILED`. `OPENING` existe no modelo persistido, mas a factory de entrada externa exclui esse tipo: a API valida e rejeita esse tipo, e a criação fica reservada ao código interno; a interface SQS ainda deverá respeitar essa separação.
+`WagerTransaction` começa em `PENDING` e pode aguardar referência, voltar ao processamento ou encerrar como `PROCESSED`, `REJECTED` ou `FAILED`. Estados terminais não aceitam novas transições. A reidratação valida e restaura o estado persistido diretamente, sem repetir o histórico de transições. Rejeições possuem códigos estáveis para saldo insuficiente, referência inválida e reversão que causaria saldo negativo; falhas técnicas usam `PROCESSING_FAILED`. `OPENING` existe no modelo persistido, mas a factory de entrada externa exclui esse tipo: a API e a fila validam e rejeitam esse tipo, e a criação fica reservada ao código interno.
 
 Reversões não podem acontecer mais de uma vez nem tornar o saldo negativo.
 
@@ -95,9 +95,9 @@ O consumidor do marco 15 recebe uma mensagem por long-poll da fila FIFO `wager-t
 
 Falhas não confirmadas usam `ChangeMessageVisibility` com atraso exponencial de 1, 2, 4, 8 e até 16 segundos. A política de redrive da fila move mensagens malsucedidas após cinco entregas para `wager-transactions-dlq.fifo`. Rejeições de negócio persistidas (por exemplo, saldo insuficiente ou referência pendente) são resultados terminais do caso de uso e recebem ACK. Mensagens inválidas e erros técnicos não recebem ACK. O worker solicita uma mensagem por vez, mantém o processamento dentro de um contexto MikroORM e, no encerramento do NestJS, aborta o long-poll e aguarda a operação em andamento. O campo opcional `WAGER_TRANSACTIONS_QUEUE_URL` permite configurar uma URL explícita; sem ele, o consumidor resolve o nome da fila.
 
-Os eventos de integração são inseridos na outbox dentro da transação financeira. Publishers concorrentes reservam registros pendentes no banco, publicam somente após o commit original e marcam sucesso ou agendam retry com backoff. Publicação duplicada é esperada e deve ser segura para consumidores.
+Os eventos de integração são inseridos na outbox dentro da transação financeira. Publishers concorrentes reservam registros pendentes com lease e `FOR UPDATE SKIP LOCKED`, publicam somente após o commit original e marcam sucesso ou agendam retry com backoff persistente. O lease e a condição de aggregate anterior não publicado evitam publicação concorrente e fora de ordem. Publicação duplicada após falha entre envio e marcação é esperada e deve ser segura para consumidores.
 
-Eventos mínimos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference` e `WalletBalanceChanged` somente quando o saldo muda.
+Eventos publicados em `wager-events.fifo`: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`, `WagerTransactionReferenceExpired` e `WalletBalanceChanged` somente quando o saldo muda. `MessageGroupId` usa o aggregate e `MessageDeduplicationId` o ID persistido do evento. O envelope contém `eventId`, `aggregateId`, `eventType`, `occurredAt` e `payload`. Como SQS e PostgreSQL não compartilham uma transação, consumidores deduplicam pelo `eventId`.
 
 ## API, autenticação e health checks
 
@@ -107,19 +107,19 @@ A camada de apresentação valida o corpo da operação e o header `Idempotency-
 
 Autenticação não vale pontos no desafio e é opcional. A decisão atual é não implementá-la nesta etapa. Se continuar fora do escopo, documentar o desenho futuro e deixar um ponto de extensão para identidade de provedor/guard. Não criar autenticação própria com tabela e hash de senha. Health checks ficam abertos; mensagens de fila são canal interno confiável, mas ainda passam pelas validações do domínio.
 
-`/health/live` verifica somente se o processo responde. `/health/ready` verifica PostgreSQL e as filas SQS necessárias.
+`/health/live` verifica somente se o processo responde. `/health/ready` verifica PostgreSQL, as filas de transações e eventos e suas respectivas DLQs.
 
 ## Migrations e estado atual do banco
 
 Migrations são versionadas, transacionais e reversíveis. O executor atual guarda versões em `schema_migrations` e usa advisory lock PostgreSQL para serializar execuções concorrentes.
 
-A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. Os marcos 10 e 11 usam repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente e assegurar replay idempotente. A inbox agora é usada pelo consumidor SQS para deduplicação atômica; a publicação da outbox continua pendente.
+A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. Os marcos 10 e 11 usam repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente e assegurar replay idempotente. A inbox é usada pelo consumidor SQS para deduplicação atômica e a outbox do marco 16 publica eventos com leases persistidos sem exigir mudança de schema.
 
 ## Observabilidade e testes
 
 Logs HTTP estruturados em JSON incluem `correlationId`, método, rota normalizada, status e duração, sem registrar payloads ou valores financeiros. O cabeçalho `X-Correlation-Id` é validado e propagado na resposta; valores inválidos são substituídos por UUID. `GET /metrics` expõe métricas Prometheus: `http_server_requests_total` (contador por método, rota e status), `http_server_request_duration_seconds` (histograma em segundos) e `health_dependency_checks_total` (contador por dependência e resultado). Métricas de transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock e atraso da outbox ainda dependem da implementação dos respectivos fluxos e devem ser instrumentadas neles.
 
-Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry` e da infraestrutura de métricas/correlação cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos, regras de reversão e exposição de métricas. Testes do consumidor validam o contrato da mensagem, ACK somente após o caso de uso concluir, retry sem ACK e encerramento seguro durante o long-poll. Testes com PostgreSQL validam repositórios, concorrência, endpoints HTTP, inbox atômica e retries de referência, incluindo resolução após chegada fora de ordem, expiração após cinco tentativas, evento único na outbox e ausência de lançamentos duplicados. Ainda serão necessários testes de falhas após commit e publishers concorrentes. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry` e da infraestrutura de métricas/correlação cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos, regras de reversão e exposição de métricas. Testes do consumidor validam o contrato da mensagem, ACK somente após o caso de uso concluir, retry sem ACK e encerramento seguro durante o long-poll. Testes do publisher cobrem o envelope FIFO, retry após falha e marcação após aceitação pelo SQS. Testes PostgreSQL validam claims concorrentes disjuntos, ordenação por aggregate, leases/retries, endpoints HTTP, inbox atômica e retries de referência, incluindo resolução após chegada fora de ordem, expiração após cinco tentativas, evento único na outbox e ausência de lançamentos duplicados. Ainda são possíveis duplicatas quando o processo cai após o envio ao broker e antes de marcar a outbox. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
 
 ## Decisões ainda revisáveis
 
