@@ -87,10 +87,16 @@ Na pasta `backend/`:
 ```powershell
 bun run build
 bun run test
+```
+
+Os testes de integração usam PostgreSQL e validam mapeamentos e reidratação. Com o PostgreSQL do Compose saudável e as variáveis de `backend/.env` configuradas, aplique as migrations e execute:
+
+```powershell
+bun run db:migrate
 bun run test:e2e
 ```
 
-Os testes de integração exigidos pelo desafio ainda serão adicionados quando a implementação de negócio começar.
+Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes de concorrência, atomicidade financeira e recuperação distribuída ainda serão adicionados nos marcos correspondentes.
 
 ## Documentação
 
