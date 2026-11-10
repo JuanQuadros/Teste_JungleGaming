@@ -1,6 +1,6 @@
 # Jungle Gaming — Processador Distribuído de Apostas
 
-Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura, o domínio, os repositórios MikroORM e os endpoints HTTP mínimos estão implementados; o processamento financeiro ocorre em transação SQL com lock por wallet e idempotência persistente. Os workers ainda aguardam integração.
+Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura, o domínio, os repositórios MikroORM, os endpoints HTTP e os consumidores SQS estão implementados; o processamento financeiro ocorre em transação SQL com lock por wallet e idempotência persistente.
 
 ## Tecnologias
 
@@ -115,6 +115,37 @@ valor, provedor, jogador, wallet, moeda e rodada são verificadas antes de
 aplicar a reversão. Reprocessar não duplica lançamentos; o publisher da outbox
 continua pendente de implementação.
 
+O consumidor da fila FIFO `wager-transactions.fifo` aceita mensagens com este
+formato:
+
+```json
+{
+  "idempotencyKey": "provider-operation-123",
+  "transaction": {
+    "providerId": "provider-a",
+    "externalTransactionId": "operation-123",
+    "walletId": "00000000-0000-4000-8000-000000000001",
+    "playerId": "00000000-0000-4000-8000-000000000002",
+    "roundId": "round-1",
+    "gameId": "game-1",
+    "kind": "BET",
+    "amount": "10.00",
+    "currency": "BRL"
+  }
+}
+```
+
+O campo `transaction` usa a mesma validação e o mesmo caso de uso financeiro
+da API. A inbox e os efeitos financeiros são confirmados atomicamente no
+PostgreSQL; o consumidor remove a mensagem da fila somente após o commit.
+Redeliveries do mesmo `MessageId` e payload são ignoradas com segurança. Falhas
+não confirmadas recebem atrasos exponenciais de 1 a 16 segundos e, após cinco
+entregas malsucedidas, a política da fila move a mensagem para
+`wager-transactions-dlq.fifo`. Rejeições de negócio persistidas são
+confirmadas; mensagens inválidas e falhas técnicas não são removidas. No
+encerramento, o consumidor cancela o long-poll e aguarda o processamento em
+andamento.
+
 ## Migrations
 
 `bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–005 criam a estrutura inicial, protegem reversões no ledger, alinham o versionamento da wallet, persistem o saldo original do replay e adicionam o agendamento de retries de referências.
@@ -135,7 +166,7 @@ bun run db:migrate
 bun run test:e2e
 ```
 
-Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam idempotência, API HTTP e referências fora de ordem: chegada tardia e resolução, esgotamento das cinco tentativas, evento de expiração único e ausência de lançamentos duplicados.
+Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam idempotência, API HTTP, inbox atômica e referências fora de ordem: chegada tardia e resolução, esgotamento das cinco tentativas, evento de expiração único e ausência de lançamentos duplicados. Testes unitários cobrem validação de mensagens, ACK após o processamento, retry sem ACK e shutdown do consumidor.
 
 ## Documentação
 
@@ -143,4 +174,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints HTTP e o 14 resolve referências ausentes com backoff e expiração auditável na outbox. Autenticação, publisher da outbox e processamento SQS ainda serão conectados.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints HTTP, o 14 resolve referências ausentes com backoff e expiração auditável na outbox, e o 15 consome a fila SQS com inbox atômica, retries e DLQ. O publisher da outbox ainda será conectado; autenticação continua fora do escopo atual.

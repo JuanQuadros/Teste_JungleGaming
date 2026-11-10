@@ -37,6 +37,12 @@ export interface OutboxEventRepositoryPort {
   insert(event: OutboxEvent): void;
 }
 
+export interface InboxMessage {
+  consumerName: string;
+  messageId: string;
+  payloadHash: string;
+}
+
 export interface WalletLedgerCursor {
   createdAt: string;
   id: string;
@@ -106,6 +112,7 @@ export interface WalletTransactionContext {
   ledgerEntries: WalletLedgerEntryRepositoryPort;
   outboxEvents: OutboxEventRepositoryPort;
   existingIdempotentTransaction: WagerTransaction | null;
+  duplicateInboxMessage: boolean;
 }
 
 /** Serializa a chave de idempotência e, para novas operações, bloqueia a wallet. */
@@ -114,6 +121,7 @@ export interface WalletTransactionUnitOfWorkPort {
     walletId: string,
     idempotencyKey: string,
     operation: (context: WalletTransactionContext) => Promise<T>,
+    inboxMessage?: InboxMessage,
   ): Promise<T>;
   withPendingReferenceLock<T>(
     idempotencyKey: string,

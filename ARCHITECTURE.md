@@ -2,9 +2,9 @@
 
 ## Estado e escopo
 
-Este documento registra as decisões que orientam a implementação do desafio. A infraestrutura, os componentes de domínio, entidades, repositórios, processamento financeiro e endpoints HTTP mínimos estão implementados. A API e o processamento financeiro usam transações SQL com lock por wallet; os workers ainda aguardam integração.
+Este documento registra as decisões que orientam a implementação do desafio. A infraestrutura, os componentes de domínio, entidades, repositórios, processamento financeiro, endpoints HTTP e o consumidor SQS estão implementados. A API e o processamento financeiro usam transações SQL com lock por wallet; o publisher da outbox ainda aguarda integração.
 
-O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira.
+O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira. A API HTTP e o consumidor SQS compartilham os mesmos casos de uso; o consumidor confirma a mensagem somente após a transação financeira e a inbox serem commitadas.
 
 ## Stack
 
@@ -21,7 +21,7 @@ As dependências devem apontar para dentro, em direção ao domínio:
 
 1. **Domínio:** `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` existem sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
 2. **Aplicação:** portas de repositório definem como localizar e persistir os aggregates; casos de uso coordenam validação, transação financeira, idempotência e criação de wallet. Publicação de eventos ainda será integrada.
-3. **Infraestrutura:** entidades MikroORM mapeiam as tabelas financeiras, inbox e outbox. Repositórios MikroORM convertem as entidades para o domínio; transações PostgreSQL e migrations dão suporte ao processamento financeiro. Workers SQS e observabilidade de negócio ainda serão implementados.
+3. **Infraestrutura:** entidades MikroORM mapeiam as tabelas financeiras, inbox e outbox. Repositórios MikroORM convertem as entidades para o domínio; transações PostgreSQL e migrations dão suporte ao processamento financeiro. O consumidor SQS processa mensagens FIFO com inbox persistente e ACK após commit; publisher da outbox e observabilidade de negócio ainda serão implementados.
 4. **Apresentação:** controllers HTTP para wallets, ledger e transações, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
 
 ## API HTTP
@@ -91,7 +91,9 @@ Reversões não podem acontecer mais de uma vez nem tornar o saldo negativo.
 
 ## SQS, inbox e outbox
 
-O consumidor grava `(consumerName, messageId)` na inbox na mesma transação SQL que processa a operação. O ack ocorre somente depois do commit. Redelivery não repete efeitos; erros de negócio são terminais, falhas transitórias são tentadas novamente e falhas permanentes/limite excedido seguem para a DLQ.
+O consumidor do marco 15 recebe uma mensagem por long-poll da fila FIFO `wager-transactions.fifo`. O corpo contém `idempotencyKey` e `transaction`; a validação é compartilhada com a entrada HTTP, e ambos chamam `SubmitWagerTransactionUseCase`. O consumidor grava `(consumerName, messageId, payloadHash)` na inbox na mesma transação SQL que serializa a chave, bloqueia a wallet e grava operação, saldo e ledger. `processed_at` também é marcado nessa transação. O ACK via `DeleteMessage` ocorre somente depois do commit. Redelivery do mesmo ID e payload não repete efeitos; o hash divergente é tratado como falha e segue a política de retry/DLQ.
+
+Falhas não confirmadas usam `ChangeMessageVisibility` com atraso exponencial de 1, 2, 4, 8 e até 16 segundos. A política de redrive da fila move mensagens malsucedidas após cinco entregas para `wager-transactions-dlq.fifo`. Rejeições de negócio persistidas (por exemplo, saldo insuficiente ou referência pendente) são resultados terminais do caso de uso e recebem ACK. Mensagens inválidas e erros técnicos não recebem ACK. O worker solicita uma mensagem por vez, mantém o processamento dentro de um contexto MikroORM e, no encerramento do NestJS, aborta o long-poll e aguarda a operação em andamento. O campo opcional `WAGER_TRANSACTIONS_QUEUE_URL` permite configurar uma URL explícita; sem ele, o consumidor resolve o nome da fila.
 
 Os eventos de integração são inseridos na outbox dentro da transação financeira. Publishers concorrentes reservam registros pendentes no banco, publicam somente após o commit original e marcam sucesso ou agendam retry com backoff. Publicação duplicada é esperada e deve ser segura para consumidores.
 
@@ -111,13 +113,13 @@ Autenticação não vale pontos no desafio e é opcional. A decisão atual é n�
 
 Migrations são versionadas, transacionais e reversíveis. O executor atual guarda versões em `schema_migrations` e usa advisory lock PostgreSQL para serializar execuções concorrentes.
 
-A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. Os marcos 10 e 11 usam repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente e assegurar replay idempotente. A integração com a outbox continua pendente.
+A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. Os marcos 10 e 11 usam repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente e assegurar replay idempotente. A inbox agora é usada pelo consumidor SQS para deduplicação atômica; a publicação da outbox continua pendente.
 
 ## Observabilidade e testes
 
 Logs HTTP estruturados em JSON incluem `correlationId`, método, rota normalizada, status e duração, sem registrar payloads ou valores financeiros. O cabeçalho `X-Correlation-Id` é validado e propagado na resposta; valores inválidos são substituídos por UUID. `GET /metrics` expõe métricas Prometheus: `http_server_requests_total` (contador por método, rota e status), `http_server_request_duration_seconds` (histograma em segundos) e `health_dependency_checks_total` (contador por dependência e resultado). Métricas de transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock e atraso da outbox ainda dependem da implementação dos respectivos fluxos e devem ser instrumentadas neles.
 
-Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry` e da infraestrutura de métricas/correlação cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos, regras de reversão e exposição de métricas. Testes com PostgreSQL validam repositórios, concorrência, endpoints HTTP e retries de referência, incluindo resolução após chegada fora de ordem, expiração após cinco tentativas, evento único na outbox e ausência de lançamentos duplicados. Ainda serão necessários testes de redelivery, falhas após commit e publishers concorrentes. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry` e da infraestrutura de métricas/correlação cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos, regras de reversão e exposição de métricas. Testes do consumidor validam o contrato da mensagem, ACK somente após o caso de uso concluir, retry sem ACK e encerramento seguro durante o long-poll. Testes com PostgreSQL validam repositórios, concorrência, endpoints HTTP, inbox atômica e retries de referência, incluindo resolução após chegada fora de ordem, expiração após cinco tentativas, evento único na outbox e ausência de lançamentos duplicados. Ainda serão necessários testes de falhas após commit e publishers concorrentes. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
 
 ## Decisões ainda revisáveis
 

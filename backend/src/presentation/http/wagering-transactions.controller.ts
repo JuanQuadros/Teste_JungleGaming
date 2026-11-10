@@ -11,26 +11,24 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { randomUUID } from 'node:crypto';
 import {
   WAGER_TRANSACTION_REPOSITORY,
   type WagerTransactionRepositoryPort,
 } from '../../application/ports/persistence.repositories.js';
-import { ProcessWagerTransactionUseCase } from '../../application/wager-processing/process-wager-transaction.use-case.js';
-import { Money } from '../../domain/money.js';
+import { SubmitWagerTransactionUseCase } from '../../application/wager-processing/submit-wager-transaction.use-case.js';
 import { WagerTransaction } from '../../domain/wager-transaction.js';
 import { IdempotencyKey, IdempotencyKeyPipe } from './idempotency-key.pipe.js';
 import { WagerTransactionRequestPipe } from './wager-transaction-request.pipe.js';
 import {
   InvalidWagerRequestError,
   type WagerTransactionRequestDto,
-} from './wager-transaction-request.dto.js';
+} from '../../application/wager-processing/wager-transaction-request.js';
 import { mapWagerTransactionResponse } from './wager-transaction-response.js';
 
 @Controller('wagering/transactions')
 export class WageringTransactionsController {
   constructor(
-    private readonly processTransaction: ProcessWagerTransactionUseCase,
+    private readonly submitTransaction: SubmitWagerTransactionUseCase,
     @Inject(WAGER_TRANSACTION_REPOSITORY)
     private readonly transactions: WagerTransactionRepositoryPort,
   ) {}
@@ -41,24 +39,7 @@ export class WageringTransactionsController {
     @IdempotencyKey(IdempotencyKeyPipe) idempotencyKey: string,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const transaction = WagerTransaction.create({
-      id: randomUUID(),
-      providerId: body.providerId,
-      externalTransactionId: body.externalTransactionId,
-      idempotencyKey,
-      payloadHash: '0'.repeat(64),
-      walletId: body.walletId,
-      playerId: body.playerId,
-      roundId: body.roundId,
-      gameId: body.gameId,
-      kind: body.kind,
-      amount: Money.from({ amount: body.amount, currency: body.currency }),
-      currency: body.currency,
-      referenceExternalTransactionId:
-        body.referenceExternalTransactionId ?? null,
-      referenceTransactionId: body.referenceTransactionId ?? null,
-    });
-    const result = await this.processTransaction.execute(transaction);
+    const result = await this.submitTransaction.execute(body, idempotencyKey);
     const mapped = mapWagerTransactionResponse(result);
     response.status(mapped.statusCode);
     return mapped.body;

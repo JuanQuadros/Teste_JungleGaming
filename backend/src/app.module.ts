@@ -22,6 +22,8 @@ import { WalletsController } from './presentation/http/wallets.controller.js';
 import { WageringTransactionsController } from './presentation/http/wagering-transactions.controller.js';
 import { RetryPendingReferencesUseCase } from './application/wager-processing/retry-pending-references.use-case.js';
 import { PendingReferenceRetryWorker } from './infrastructure/workers/pending-reference-retry.worker.js';
+import { SubmitWagerTransactionUseCase } from './application/wager-processing/submit-wager-transaction.use-case.js';
+import { WagerTransactionSqsConsumer } from './infrastructure/workers/wager-transaction-sqs.consumer.js';
 
 // Compartilha o cliente AWS e permite apontá-lo ao LocalStack no ambiente local.
 const sqsClientProvider = {
@@ -53,9 +55,11 @@ const sqsClientProvider = {
   providers: [
     AppService,
     ProcessWagerTransactionUseCase,
+    SubmitWagerTransactionUseCase,
     CreateWalletUseCase,
     RetryPendingReferencesUseCase,
     PendingReferenceRetryWorker,
+    WagerTransactionSqsConsumer,
     sqsClientProvider,
     RequestContext,
     MetricsService,

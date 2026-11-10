@@ -13,6 +13,7 @@ import {
 } from '../../application/ports/persistence.repositories.js';
 import { CreateWalletUseCase } from '../../application/wallet-management/create-wallet.use-case.js';
 import { ProcessWagerTransactionUseCase } from '../../application/wager-processing/process-wager-transaction.use-case.js';
+import { SubmitWagerTransactionUseCase } from '../../application/wager-processing/submit-wager-transaction.use-case.js';
 import { RetryPendingReferencesUseCase } from '../../application/wager-processing/retry-pending-references.use-case.js';
 import { mikroOrmConfig } from '../../mikro-orm.config.js';
 import {
@@ -111,6 +112,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       providers: [
         CreateWalletUseCase,
         ProcessWagerTransactionUseCase,
+        SubmitWagerTransactionUseCase,
         RetryPendingReferencesUseCase,
         {
           provide: WALLET_CREATION_UNIT_OF_WORK,

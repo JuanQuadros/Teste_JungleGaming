@@ -14,7 +14,7 @@ dlq_arn="$(awslocal sqs get-queue-attributes \
   --query Attributes.QueueArn --output text)"
 
 # A política de redirecionamento também é uma string JSON dentro do objeto de atributos.
-queue_attributes="$(printf '{"FifoQueue":"true","ContentBasedDeduplication":"false","RedrivePolicy":"{\\"deadLetterTargetArn\\":\\"%s\\",\\"maxReceiveCount\\":\\"5\\"}"}' "$dlq_arn")"
+queue_attributes="$(printf '{"FifoQueue":"true","ContentBasedDeduplication":"false","VisibilityTimeout":"60","RedrivePolicy":"{\\"deadLetterTargetArn\\":\\"%s\\",\\"maxReceiveCount\\":\\"5\\"}"}' "$dlq_arn")"
 awslocal sqs create-queue \
   --queue-name wager-transactions.fifo \
   --attributes "$queue_attributes"

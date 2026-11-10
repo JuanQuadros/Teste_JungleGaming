@@ -17,6 +17,7 @@ import {
   type WagerTransactionSnapshot,
 } from '../../domain/wager-transaction.js';
 import {
+  type InboxMessage,
   WALLET_TRANSACTION_UNIT_OF_WORK,
   type WalletTransactionContext,
   type WalletTransactionUnitOfWorkPort,
@@ -38,6 +39,24 @@ export class ProcessWagerTransactionUseCase {
    * Persiste a operação uma vez; reenvios iguais retornam o registro já salvo.
    */
   async execute(input: WagerTransaction): Promise<WagerTransaction> {
+    const result = await this.process(input);
+    if (!result) {
+      throw new Error('Uma mensagem HTTP não pode ser deduplicada pela inbox.');
+    }
+    return result;
+  }
+
+  executeFromQueue(
+    input: WagerTransaction,
+    inboxMessage: InboxMessage,
+  ): Promise<WagerTransaction | null> {
+    return this.process(input, inboxMessage);
+  }
+
+  private async process(
+    input: WagerTransaction,
+    inboxMessage?: InboxMessage,
+  ): Promise<WagerTransaction | null> {
     const original = input.toSnapshot();
     if (original.status !== WagerTransactionStatus.PENDING) {
       throw new Error('Somente uma transação PENDING pode ser processada.');
@@ -52,6 +71,7 @@ export class ProcessWagerTransactionUseCase {
       snapshot.walletId,
       snapshot.idempotencyKey,
       async (context) => {
+        if (context.duplicateInboxMessage) return null;
         const existing = context.existingIdempotentTransaction;
         if (existing) {
           if (existing.payloadHash !== snapshot.payloadHash) {
@@ -67,6 +87,7 @@ export class ProcessWagerTransactionUseCase {
           wallet: context.wallet,
         });
       },
+      inboxMessage,
     );
   }
 

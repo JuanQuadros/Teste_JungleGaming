@@ -9,6 +9,7 @@ import {
 import { Wallet } from '../../domain/wallet.js';
 import { mikroOrmConfig } from '../../mikro-orm.config.js';
 import { ProcessWagerTransactionUseCase } from './process-wager-transaction.use-case.js';
+import { SubmitWagerTransactionUseCase } from './submit-wager-transaction.use-case.js';
 import { IdempotencyConflictError } from './idempotency-conflict.error.js';
 import { MikroOrmWalletTransactionUnitOfWork } from '../../infrastructure/persistence/mikro-orm-wallet-transaction.unit-of-work.js';
 import { MikroOrmWalletRepository } from '../../infrastructure/persistence/repositories/mikro-orm-wallet.repository.js';
@@ -165,6 +166,81 @@ describe('Wager idempotency (PostgreSQL)', () => {
     expect(replayAfterRestart.id).toBe(concurrentResults[0].id);
     expect(replayAfterRestart.responseBalance?.toJSON().amount).toBe('80.00');
     expect(await walletBalance()).toBe('75.00');
+  }, 30_000);
+
+  it('commits inbox deduplication atomically with the financial operation', async () => {
+    const balanceBefore = await walletBalance();
+    const submit = new SubmitWagerTransactionUseCase(
+      new ProcessWagerTransactionUseCase(
+        new MikroOrmWalletTransactionUnitOfWork(appOrm.em.fork()),
+      ),
+    );
+    const input = {
+      providerId: 'inbox-test-provider',
+      externalTransactionId: `external-${randomUUID()}`,
+      walletId,
+      playerId,
+      roundId: 'inbox-test-round',
+      gameId: 'inbox-test-game',
+      kind: WagerTransactionType.BET,
+      amount: '10.00',
+      currency: 'BRL',
+    } as const;
+    const idempotencyKey = `queue-${randomUUID()}`;
+    const inboxMessage = {
+      consumerName: 'wager-transactions',
+      messageId: randomUUID(),
+      payloadHash: 'a'.repeat(64),
+    };
+
+    const first = await submit.execute(input, idempotencyKey, inboxMessage);
+    const redelivery = await submit.execute(
+      input,
+      idempotencyKey,
+      inboxMessage,
+    );
+
+    expect(first).not.toBeNull();
+    expect(redelivery).toBeNull();
+    expect(await walletBalance()).toBe(
+      Money.from({ amount: balanceBefore, currency: 'BRL' })
+        .subtract(Money.from({ amount: '10.00', currency: 'BRL' }))
+        .toJSON().amount,
+    );
+    const inboxRows = (await appOrm.em.getConnection().execute(
+      `select payload_hash, processed_at from "${schemaName}".inbox_messages
+       where consumer_name = ? and message_id = ?`,
+      [inboxMessage.consumerName, inboxMessage.messageId],
+    )) as { payload_hash: string; processed_at: Date | null }[];
+    expect(inboxRows).toHaveLength(1);
+    expect(inboxRows[0].payload_hash).toBe(inboxMessage.payloadHash);
+    expect(inboxRows[0].processed_at).not.toBeNull();
+
+    await expect(
+      submit.execute(input, idempotencyKey, {
+        ...inboxMessage,
+        payloadHash: 'b'.repeat(64),
+      }),
+    ).rejects.toThrow();
+
+    const failedMessage = {
+      consumerName: 'wager-transactions',
+      messageId: randomUUID(),
+      payloadHash: 'c'.repeat(64),
+    };
+    await expect(
+      submit.execute(
+        { ...input, walletId: randomUUID() },
+        `queue-${randomUUID()}`,
+        failedMessage,
+      ),
+    ).rejects.toThrow();
+    const failedInboxRows = (await appOrm.em.getConnection().execute(
+      `select message_id from "${schemaName}".inbox_messages
+       where consumer_name = ? and message_id = ?`,
+      [failedMessage.consumerName, failedMessage.messageId],
+    )) as { message_id: string }[];
+    expect(failedInboxRows).toHaveLength(0);
   }, 30_000);
 
   function processAttempt(input: {

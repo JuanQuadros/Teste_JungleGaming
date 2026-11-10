@@ -18,7 +18,7 @@ import {
 } from '../../application/ports/persistence.repositories.js';
 import { CreateWalletUseCase } from '../../application/wallet-management/create-wallet.use-case.js';
 import { Wallet } from '../../domain/wallet.js';
-import { InvalidWagerRequestError } from './wager-transaction-request.dto.js';
+import { InvalidWagerRequestError } from '../../application/wager-processing/wager-transaction-request.js';
 import { CreateWalletRequestPipe } from './create-wallet-request.pipe.js';
 import type { CreateWalletRequestDto } from './create-wallet-request.dto.js';
 
