@@ -24,6 +24,7 @@ import {
 } from '../ports/persistence.repositories.js';
 import {
   createIntegrationEvent,
+  WalletBalanceChanged,
   type IntegrationEventType,
 } from '../events/integration-event.js';
 import { RequestContext } from '../../observability/request-context.js';
@@ -63,9 +64,11 @@ export class ProcessWagerTransactionUseCase {
     inboxMessage?: InboxMessage,
   ): Promise<WagerTransaction | null> {
     const original = input.toSnapshot();
+
     if (original.status !== WagerTransactionStatus.PENDING) {
       throw new Error('Somente uma transação PENDING pode ser processada.');
     }
+
     // A API calcula o hash dos campos de negócio para não confiar em hash recebido.
     const snapshot = {
       ...original,
@@ -77,16 +80,21 @@ export class ProcessWagerTransactionUseCase {
       snapshot.idempotencyKey,
       async (context) => {
         if (context.duplicateInboxMessage) return null;
+
         const existing = context.existingIdempotentTransaction;
+
         if (existing) {
           if (existing.payloadHash !== snapshot.payloadHash) {
             throw new IdempotencyConflictError();
           }
+
           return existing;
         }
+
         if (!context.wallet) {
           throw new Error('Wallet ausente após adquirir o lock transacional.');
         }
+
         return this.processInsideTransaction(snapshot, {
           ...context,
           wallet: context.wallet,
@@ -104,18 +112,21 @@ export class ProcessWagerTransactionUseCase {
       idempotencyKey,
       async (context) => {
         const pending = context.existingIdempotentTransaction;
+
         if (
           !pending ||
           pending.status !== WagerTransactionStatus.PENDING_REFERENCE
         ) {
           return pending;
         }
+
         if (
           pending.referenceNextAttemptAt &&
           pending.referenceNextAttemptAt.getTime() > now.getTime()
         ) {
           return pending;
         }
+
         if (!context.wallet) {
           throw new Error(
             'Wallet ausente ao reprocessar uma referência pendente.',
@@ -134,33 +145,38 @@ export class ProcessWagerTransactionUseCase {
         if (!reference) {
           const attempts = pending.referenceAttempts + 1;
           const expired = attempts >= PENDING_REFERENCE_MAX_RETRIES;
+
           const nextAttemptAt = expired
             ? null
             : new Date(
                 now.getTime() + PENDING_REFERENCE_BASE_DELAY_MS * 2 ** attempts,
               );
+
           pending.recordReferenceRetry(nextAttemptAt);
+
           if (expired) {
             pending.reject(WagerRejectionCode.REFERENCE_NOT_FOUND);
+
             this.recordOutboxEvent(context, {
-              id: randomUUID(),
+              eventId: randomUUID(),
               aggregateId: pending.id,
               eventType: 'WagerTransactionRejected',
-              payload: {
+              data: {
                 transactionId: pending.id,
                 providerId: pending.providerId,
                 externalTransactionId: pending.externalTransactionId,
                 kind: pending.kind,
                 failureCode: WagerRejectionCode.REFERENCE_NOT_FOUND,
-                balance: context.wallet?.balance.toJSON().amount ?? '0.00',
+                balance: context.wallet.balance.toJSON().amount,
               },
               occurredAt: now,
             });
+
             this.recordOutboxEvent(context, {
-              id: randomUUID(),
+              eventId: randomUUID(),
               aggregateId: pending.id,
               eventType: 'WagerTransactionReferenceExpired',
-              payload: {
+              data: {
                 transactionId: pending.id,
                 failureCode: WagerRejectionCode.REFERENCE_NOT_FOUND,
                 attempts,
@@ -168,11 +184,13 @@ export class ProcessWagerTransactionUseCase {
               occurredAt: now,
             });
           }
+
           await context.transactions.update(pending);
           return pending;
         }
 
         pending.resumeAfterReference();
+
         return this.processInsideTransaction(
           pending.toSnapshot(),
           { ...context, wallet: context.wallet },
@@ -198,7 +216,10 @@ export class ProcessWagerTransactionUseCase {
       roundId: snapshot.roundId,
       walletId: snapshot.walletId,
     };
-    return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+
+    return createHash('sha256')
+      .update(JSON.stringify(payload))
+      .digest('hex');
   }
 
   /** Executa as regras após adquirir o lock e usando apenas dados da mesma transação SQL. */
@@ -208,9 +229,11 @@ export class ProcessWagerTransactionUseCase {
     existing?: WagerTransaction,
   ): Promise<WagerTransaction> {
     const { wallet, wallets, transactions, ledgerEntries } = context;
+
     if (!wallet) {
       throw new Error('Wallet ausente no processamento de uma nova operação.');
     }
+
     if (
       wallet.playerId !== snapshot.playerId ||
       wallet.currency !== snapshot.currency
@@ -225,8 +248,11 @@ export class ProcessWagerTransactionUseCase {
     }
 
     const processed = existing ?? WagerTransaction.rehydrate(snapshot);
+
     processed.markProcessed();
+
     const balanceBefore = wallet.balance;
+
     let entry: WalletLedgerEntry | null = null;
     let balanceChanged = false;
 
@@ -244,28 +270,34 @@ export class ProcessWagerTransactionUseCase {
               existing,
             );
           }
+
           throw error;
         }
+
         entry = WalletLedgerEntry.createForTransaction({
           id: randomUUID(),
           transaction: processed,
           balanceBefore,
         });
+
         balanceChanged = true;
         break;
 
       case WagerTransactionType.WIN:
       case WagerTransactionType.OPENING:
         wallet.credit(snapshot.amount);
+
         entry = WalletLedgerEntry.createForTransaction({
           id: randomUUID(),
           transaction: processed,
           balanceBefore,
         });
+
         balanceChanged = true;
         break;
 
       case WagerTransactionType.LOSS:
+        // LOSS registra a transação, mas não altera saldo nem cria lançamento.
         break;
 
       case WagerTransactionType.REFUND:
@@ -278,7 +310,9 @@ export class ProcessWagerTransactionUseCase {
           balanceBefore,
           existing,
         );
+
         if (reversal instanceof WagerTransaction) return reversal;
+
         entry = reversal;
 
         if (entry.direction === WalletLedgerDirection.CREDIT) {
@@ -286,26 +320,38 @@ export class ProcessWagerTransactionUseCase {
         } else {
           wallet.debit(entry.amount);
         }
+
         balanceChanged = true;
         break;
       }
     }
 
-    if (balanceChanged) await wallets.update(wallet);
-    if (entry) ledgerEntries.insert(entry);
+    // Persiste a carteira somente quando houve alteração de saldo.
+    if (balanceChanged) {
+      await wallets.update(wallet);
+    }
+
+    // O lançamento é inserido na mesma unidade de trabalho/transação.
+    if (entry) {
+      ledgerEntries.insert(entry);
+    }
+
     if (processed.responseBalance === null) {
       processed.recordResponseBalance(wallet.balance);
     }
+
     if (existing) {
       await transactions.update(processed);
     } else {
       transactions.insert(processed);
     }
+
+    // Evento de integração para toda transação processada, inclusive LOSS.
     this.recordOutboxEvent(context, {
-      id: randomUUID(),
+      eventId: randomUUID(),
       aggregateId: processed.id,
       eventType: 'WagerTransactionProcessed',
-      payload: {
+      data: {
         transactionId: processed.id,
         providerId: processed.providerId,
         externalTransactionId: processed.externalTransactionId,
@@ -316,21 +362,29 @@ export class ProcessWagerTransactionUseCase {
       },
       occurredAt: new Date(),
     });
+
+    // Evento de saldo somente quando houve alteração financeira.
     if (balanceChanged) {
-      this.recordOutboxEvent(context, {
-        id: randomUUID(),
-        aggregateId: wallet.id,
-        eventType: 'WalletBalanceChanged',
-        payload: {
-          walletId: wallet.id,
-          transactionId: processed.id,
-          currency: wallet.currency,
-          balanceBefore: balanceBefore.toJSON().amount,
-          balanceAfter: wallet.balance.toJSON().amount,
+      if (!entry) {
+        throw new Error(
+          'Invariante violada: saldo alterado sem lançamento no ledger.',
+        );
+      }
+
+      // A classe concreta monta o envelope e serializa os valores monetários.
+      const balanceChangedEvent = WalletBalanceChanged.from(
+        wallet,
+        entry,
+        {
+          correlationId:
+            RequestContext.currentCorrelationId ?? wallet.id,
+          causationId: processed.id,
         },
-        occurredAt: new Date(),
-      });
+      );
+
+      context.outboxEvents.insert(balanceChangedEvent);
     }
+
     return processed;
   }
 
@@ -344,6 +398,7 @@ export class ProcessWagerTransactionUseCase {
     existing?: WagerTransaction,
   ): Promise<WalletLedgerEntry | WagerTransaction> {
     const { transactions, ledgerEntries } = context;
+
     if (
       !snapshot.referenceTransactionId &&
       !snapshot.referenceExternalTransactionId
@@ -363,18 +418,23 @@ export class ProcessWagerTransactionUseCase {
           snapshot.providerId,
           snapshot.referenceExternalTransactionId!,
         );
+
     if (!original) {
       const pending = WagerTransaction.rehydrate(snapshot);
+
       pending.markPendingReference(
         new Date(Date.now() + PENDING_REFERENCE_BASE_DELAY_MS),
       );
+
       pending.recordResponseBalance(balanceBefore);
+
       transactions.insert(pending);
+
       this.recordOutboxEvent(context, {
-        id: randomUUID(),
+        eventId: randomUUID(),
         aggregateId: pending.id,
         eventType: 'WagerTransactionPendingReference',
-        payload: {
+        data: {
           transactionId: pending.id,
           providerId: pending.providerId,
           externalTransactionId: pending.externalTransactionId,
@@ -384,10 +444,12 @@ export class ProcessWagerTransactionUseCase {
         },
         occurredAt: new Date(),
       });
+
       return pending;
     }
 
     const originalEntry = await ledgerEntries.findByTransactionId(original.id);
+
     if (!originalEntry) {
       return this.reject(
         snapshot,
@@ -401,6 +463,7 @@ export class ProcessWagerTransactionUseCase {
     const existingReversal = await ledgerEntries.findReversalByTransactionId(
       original.id,
     );
+
     try {
       return WalletLedgerEntry.reverse({
         id: randomUUID(),
@@ -420,6 +483,7 @@ export class ProcessWagerTransactionUseCase {
           existing,
         );
       }
+
       if (
         error instanceof InvalidWalletLedgerEntryError ||
         error instanceof DuplicateLedgerReversalError
@@ -432,6 +496,7 @@ export class ProcessWagerTransactionUseCase {
           existing,
         );
       }
+
       throw error;
     }
   }
@@ -445,20 +510,24 @@ export class ProcessWagerTransactionUseCase {
     existing?: WagerTransaction,
   ): Promise<WagerTransaction> {
     const rejected = WagerTransaction.rehydrate(snapshot);
+
     rejected.reject(code);
+
     if (rejected.responseBalance === null) {
       rejected.recordResponseBalance(responseBalance);
     }
+
     if (existing) {
       await context.transactions.update(rejected);
     } else {
       context.transactions.insert(rejected);
     }
+
     this.recordOutboxEvent(context, {
-      id: randomUUID(),
+      eventId: randomUUID(),
       aggregateId: rejected.id,
       eventType: 'WagerTransactionRejected',
-      payload: {
+      data: {
         transactionId: rejected.id,
         providerId: rejected.providerId,
         externalTransactionId: rejected.externalTransactionId,
@@ -468,27 +537,34 @@ export class ProcessWagerTransactionUseCase {
       },
       occurredAt: new Date(),
     });
+
     return rejected;
   }
 
+  /**
+   * Registra eventos comuns no Outbox usando as classes concretas.
+   * WalletBalanceChanged é excluído porque exige dados do Wallet e do Ledger.
+   */
   private recordOutboxEvent(
     context: WalletTransactionContext,
     event: {
-      id: string;
+      eventId: string;
       aggregateId: string;
-      eventType: IntegrationEventType;
-      payload: Record<string, unknown>;
+      eventType: Exclude<IntegrationEventType, 'WalletBalanceChanged'>;
+      data: Record<string, unknown>;
       occurredAt: Date;
     },
   ): void {
     const causationId =
-      typeof event.payload.transactionId === 'string'
-        ? event.payload.transactionId
+      typeof event.data.transactionId === 'string'
+        ? event.data.transactionId
         : event.aggregateId;
+
     context.outboxEvents.insert(
       createIntegrationEvent(event.eventType, {
         ...event,
-        correlationId: RequestContext.currentCorrelationId ?? event.aggregateId,
+        correlationId:
+          RequestContext.currentCorrelationId ?? event.aggregateId,
         causationId,
       }),
     );

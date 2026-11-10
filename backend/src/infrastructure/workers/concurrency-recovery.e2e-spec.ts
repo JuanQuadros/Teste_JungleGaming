@@ -503,6 +503,36 @@ describe('Concurrency and recovery (PostgreSQL and LocalStack)', () => {
       ...mikroOrmConfig,
       schema: schema.name,
     });
+    // Consulta os quatro lançamentos das apostas e suas reversões.
+    const reversalLedgerRows = (await schema.orm.em.getConnection().execute(
+      `select
+        transaction_id as "transactionId",
+        direction,
+        amount::text as amount,
+        reversal_of_transaction_id as "reversalOfTransactionId"
+       from "${schema.name}".wallet_ledger_entries
+       where wallet_id = ? and transaction_id in (?, ?, ?, ?)`,
+      [wallet.id, refundBet.id, processedRefund!.id, rollbackBet.id, processedRollback!.id],
+    )) as {
+      transactionId: string;
+      direction: string;
+      amount: string;
+      reversalOfTransactionId: string | null;
+    }[];
+
+    // Confirma que os quatro lançamentos foram persistidos.
+    expect(reversalLedgerRows).toHaveLength(4);
+
+    // Confirma valores, direções e vínculos das reversões.
+    expect(reversalLedgerRows).toEqual(
+      expect.arrayContaining([
+        { transactionId: refundBet.id, direction: "DEBIT", amount: "10.00", reversalOfTransactionId: null },
+        { transactionId: processedRefund!.id, direction: "CREDIT", amount: "10.00", reversalOfTransactionId: refundBet.id },
+        { transactionId: rollbackBet.id, direction: "DEBIT", amount: "15.00", reversalOfTransactionId: null },
+        { transactionId: processedRollback!.id, direction: "CREDIT", amount: "15.00", reversalOfTransactionId: rollbackBet.id },
+      ]),
+    );
+
     const reconciliation = await new ReconcileWalletUseCase(
       new MikroOrmWalletLedgerEntryRepository(schema.orm.em.fork()),
     ).execute(wallet.id);

@@ -5,3 +5,6 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Guia pessoal de apresentação (não enviar ao GitHub)
+/GUIA.md

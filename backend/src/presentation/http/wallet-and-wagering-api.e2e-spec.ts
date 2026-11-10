@@ -1,3 +1,4 @@
+
 import { Test } from '@nestjs/testing';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { randomUUID } from 'node:crypto';
@@ -53,6 +54,10 @@ import {
   name as versionedOutboxEventsName,
   up as versionedOutboxEventsUp,
 } from '../../migrations/009-versioned-outbox-events.js';
+import {
+  name as transactionTerminalTimestampsName,
+  up as transactionTerminalTimestampsUp,
+} from '../../migrations/010-transaction-terminal-timestamps.js';
 import { RequestContext } from '../../observability/request-context.js';
 import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
@@ -64,6 +69,7 @@ import { HttpExceptionFilter } from './http-exception.filter.js';
 import { WageringTransactionsController } from './wagering-transactions.controller.js';
 import { WalletsController } from './wallets.controller.js';
 
+// Mantém a sequência de migrations usada para preparar o schema isolado do teste.
 const migrations = [
   initialUp,
   ledgerUp,
@@ -74,6 +80,7 @@ const migrations = [
   walletLedgerBalanceUp,
   ledgerTruncateProtectionUp,
   versionedOutboxEventsUp,
+  transactionTerminalTimestampsUp,
 ];
 
 describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
@@ -85,16 +92,23 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
   beforeAll(async () => {
     adminOrm = await MikroORM.init(mikroOrmConfig);
     schemaName = `wallet_api_${randomUUID().replaceAll('-', '')}`;
-    await adminOrm.em.getConnection().execute(`create schema "${schemaName}"`);
+
+    await adminOrm.em
+      .getConnection()
+      .execute(`create schema "${schemaName}"`);
+
     appOrm = await MikroORM.init({ ...mikroOrmConfig, schema: schemaName });
+
     await appOrm.em.transactional(async (em) => {
       const connection = em.getConnection();
+
       await connection.execute(
         `set local search_path to "${schemaName}", public`,
         [],
         'all',
         em.getTransactionContext(),
       );
+
       await connection.execute(
         `create table schema_migrations (
           name text primary key,
@@ -104,6 +118,8 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         'all',
         em.getTransactionContext(),
       );
+
+      // Registra o nome de cada migration junto com sua execução.
       const names = [
         initialName,
         ledgerName,
@@ -114,7 +130,9 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         walletLedgerBalanceName,
         ledgerTruncateProtectionName,
         versionedOutboxEventsName,
+        transactionTerminalTimestampsName,
       ];
+
       for (const [index, statements] of migrations.entries()) {
         for (const statement of statements) {
           await connection.execute(
@@ -124,6 +142,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
             em.getTransactionContext(),
           );
         }
+
         await connection.execute(
           'insert into schema_migrations (name) values (?)',
           [names[index]],
@@ -170,42 +189,51 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         StructuredLogger,
       ],
     }).compile();
+
     app = moduleRef.createNestApplication();
+
     const logger = app.get(StructuredLogger);
     vi.spyOn(logger, 'errorEvent').mockImplementation(() => {});
+
     app.useGlobalFilters(
       new HttpExceptionFilter(app.get(RequestContext), logger),
     );
+
     await app.init();
   }, 30_000);
 
   afterAll(async () => {
     await app?.close();
     await appOrm?.close(true);
+
     if (adminOrm && schemaName) {
       await adminOrm.em
         .getConnection()
         .execute(`drop schema "${schemaName}" cascade`);
     }
+
     await adminOrm?.close(true);
   });
 
   it('creates wallets and atomically records an initial OPENING', async () => {
     const playerId = randomUUID();
+
     const response = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '50.00' })
       .expect(201);
+
+    // O saldo da carteira agora é um objeto Money serializado.
     expect(response.body).toMatchObject({
       playerId,
-      currency: 'BRL',
-      balance: '50.00',
+      balance: { amount: '50.00', currency: 'BRL' },
       version: 1,
     });
 
     const page = await request(app.getHttpServer())
       .get(`/wallets/${response.body.walletId}/ledger`)
       .expect(200);
+
     expect(page.body.items).toHaveLength(1);
     expect(page.body.items[0]).toMatchObject({
       direction: 'CREDIT',
@@ -213,19 +241,23 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       balanceBefore: '0.00',
       balanceAfter: '50.00',
     });
+
     const opening = await request(app.getHttpServer())
       .get(`/wagering/transactions/${page.body.items[0].transactionId}`)
       .expect(200);
+
     expect(opening.body).toMatchObject({
       kind: 'OPENING',
       status: 'PROCESSED',
-      balance: '50.00',
+      balance: { amount: '50.00', currency: 'BRL' },
     });
+
     const openingEvents = (await appOrm.em.getConnection().execute(
       `select event_type from "${schemaName}".outbox_messages
        where aggregate_id in (?, ?)`,
       [opening.body.transactionId, response.body.walletId],
     )) as { event_type: string }[];
+
     expect(openingEvents.map(({ event_type }) => event_type).sort()).toEqual([
       'WagerTransactionProcessed',
       'WalletBalanceChanged',
@@ -243,19 +275,27 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .post('/wallets')
       .send({ playerId: randomUUID(), currency: 'BRL' })
       .expect(201);
-    expect(emptyWallet.body).toMatchObject({ balance: '0.00', version: 1 });
+
+    expect(emptyWallet.body).toMatchObject({
+      balance: { amount: '0.00', currency: 'BRL' },
+      version: 1,
+    });
+
     const emptyLedger = await request(app.getHttpServer())
       .get(`/wallets/${emptyWallet.body.walletId}/ledger`)
       .expect(200);
+
     expect(emptyLedger.body).toEqual({ items: [], nextCursor: null });
   });
 
   it('reconciles the wallet balance against its immutable ledger', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '25.00' })
       .expect(201);
+
     await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', `reconcile-bet-${randomUUID()}`)
@@ -265,6 +305,8 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
     const reconciliation = await request(app.getHttpServer())
       .post(`/wallets/${wallet.body.walletId}/reconciliation`)
       .expect(201);
+
+    // Reconciliação e extrato continuam retornando valores como strings.
     expect(reconciliation.body).toEqual({
       walletId: wallet.body.walletId,
       currency: 'BRL',
@@ -276,6 +318,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
     });
 
     const metrics = app.get(MetricsService).renderPrometheus();
+
     expect(metrics).toContain(
       'wallet_reconciliations_total{result="consistent"} 1',
     );
@@ -283,29 +326,33 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
 
   it('reports a divergence without changing the wallet or ledger', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '25.00' })
       .expect(201);
+
     await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', `reconcile-bet-${randomUUID()}`)
       .send(transactionBody(wallet.body.walletId, playerId, '5.00'))
       .expect(200);
+
     await appOrm.em.getConnection().execute(
       `alter table "${schemaName}".wallets
        disable trigger wallets_ledger_balance_consistency`,
     );
-    await appOrm.em
-      .getConnection()
-      .execute(
-        `update "${schemaName}".wallets set balance = '23.00' where id = ?`,
-        [wallet.body.walletId],
-      );
+
+    await appOrm.em.getConnection().execute(
+      `update "${schemaName}".wallets set balance = '23.00' where id = ?`,
+      [wallet.body.walletId],
+    );
+
     await appOrm.em.getConnection().execute(
       `alter table "${schemaName}".wallets
        enable trigger wallets_ledger_balance_consistency`,
     );
+
     const readLedgerSnapshot = () =>
       appOrm.em.getConnection().execute(
         `select
@@ -322,11 +369,13 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
          order by id`,
         [wallet.body.walletId],
       );
+
     const ledgerBefore = await readLedgerSnapshot();
 
     const reconciliation = await request(app.getHttpServer())
       .post(`/wallets/${wallet.body.walletId}/reconciliation`)
       .expect(201);
+
     expect(reconciliation.body).toEqual({
       walletId: wallet.body.walletId,
       currency: 'BRL',
@@ -340,11 +389,19 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
     const walletAfter = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}`)
       .expect(200);
+
     const ledgerAfter = await readLedgerSnapshot();
-    expect(walletAfter.body.balance).toBe('23.00');
+
+    // A consulta da carteira retorna o saldo no formato objeto.
+    expect(walletAfter.body.balance).toEqual({
+      amount: '23.00',
+      currency: 'BRL',
+    });
     expect(walletAfter.body.version).toBe(2);
     expect(ledgerAfter).toEqual(ledgerBefore);
+
     const logErrorEvent = vi.spyOn(app.get(StructuredLogger), 'errorEvent');
+
     expect(logErrorEvent).toHaveBeenCalledWith(
       'wallet_reconciliation_inconsistent',
       expect.objectContaining({
@@ -355,6 +412,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         entriesVerified: 2,
       }),
     );
+
     expect(app.get(MetricsService).renderPrometheus()).toContain(
       'wallet_reconciliations_total{result="inconsistent"} 1',
     );
@@ -383,20 +441,24 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
 
   it('submits idempotently and supports wallet, ledger, and transaction lookups', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '50.00' })
       .expect(201);
+
     const firstBody = transactionBody(wallet.body.walletId, playerId, '10.00');
+
     const first = await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', 'api-bet-1')
       .send(firstBody)
       .expect(200);
+
     expect(first.body).toMatchObject({
       status: 'PROCESSED',
       code: 'PROCESSED',
-      balance: '40.00',
+      balance: { amount: '40.00', currency: 'BRL' },
       idempotentReplay: false,
     });
 
@@ -405,6 +467,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .set('Idempotency-Key', 'api-bet-1')
       .send(firstBody)
       .expect(200);
+
     expect(replay.body).toEqual({
       ...first.body,
       idempotentReplay: true,
@@ -415,19 +478,25 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .set('Idempotency-Key', 'api-bet-2')
       .send(transactionBody(wallet.body.walletId, playerId, '5.00'))
       .expect(200);
-    expect(second.body.balance).toBe('35.00');
+
+    expect(second.body.balance).toEqual({
+      amount: '35.00',
+      currency: 'BRL',
+    });
 
     const walletState = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}`)
       .expect(200);
+
     expect(walletState.body).toMatchObject({
-      balance: '35.00',
+      balance: { amount: '35.00', currency: 'BRL' },
       version: 3,
     });
 
     const transactionById = await request(app.getHttpServer())
       .get(`/wagering/transactions/${first.body.transactionId}`)
       .expect(200);
+
     const transactionByExternalId = await request(app.getHttpServer())
       .get('/wagering/transactions/by-external')
       .query({
@@ -435,39 +504,49 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         externalTransactionId: firstBody.externalTransactionId,
       })
       .expect(200);
+
     expect(transactionByExternalId.body).toEqual(transactionById.body);
 
     const firstPage = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .query({ limit: 2 })
       .expect(200);
+
     expect(firstPage.body.items).toHaveLength(2);
     expect(firstPage.body.nextCursor).toEqual(expect.any(String));
+
     const secondPage = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .query({ limit: 2, cursor: firstPage.body.nextCursor })
       .expect(200);
+
     expect(secondPage.body.items).toHaveLength(1);
     expect(secondPage.body.nextCursor).toBeNull();
+
     const entryIds = [...firstPage.body.items, ...secondPage.body.items].map(
       ({ entryId }: { entryId: string }) => entryId,
     );
+
     expect(new Set(entryIds).size).toBe(3);
   });
 
   it('rejects invalid requests and conflicting reuse of the idempotency key', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '20.00' })
       .expect(201);
+
     const body = transactionBody(wallet.body.walletId, playerId, '5.00');
     const key = `conflict-${randomUUID()}`;
+
     await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', key)
       .send(body)
       .expect(200);
+
     await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', key)
@@ -485,10 +564,12 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         initialBalance: '-1.00',
       })
       .expect(400);
+
     await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .query({ limit: 101 })
       .expect(400);
+
     await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .query({ cursor: 'not-a-cursor' })
@@ -522,6 +603,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         expect(errorBody.error.details).toContainEqual(
           expect.objectContaining({ field: 'walletId', code: 'INVALID_UUID' }),
         );
+
         expect(errorBody.error.details).toContainEqual(
           expect.objectContaining({
             field: 'reference',
@@ -533,10 +615,12 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
 
   it('maps insufficient balance to 422 and missing references to 202', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL' })
       .expect(201);
+
     const betBody = transactionBody(wallet.body.walletId, playerId, '0.01');
 
     const rejected = await request(app.getHttpServer())
@@ -544,19 +628,21 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .set('Idempotency-Key', `insufficient-${randomUUID()}`)
       .send(betBody)
       .expect(422);
+
     expect(rejected.body).toMatchObject({
       status: 'REJECTED',
       code: 'INSUFFICIENT_BALANCE',
-      balance: '0.00',
+      balance: { amount: '0.00', currency: 'BRL' },
     });
 
     const persistedRejected = await request(app.getHttpServer())
       .get(`/wagering/transactions/${rejected.body.transactionId}`)
       .expect(200);
+
     expect(persistedRejected.body).toMatchObject({
       status: 'REJECTED',
       failureCode: 'INSUFFICIENT_BALANCE',
-      balance: '0.00',
+      balance: { amount: '0.00', currency: 'BRL' },
     });
 
     const pendingBody = {
@@ -564,16 +650,19 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       kind: 'REFUND',
       referenceExternalTransactionId: `not-arrived-${randomUUID()}`,
     };
+
     const pendingKey = `pending-${randomUUID()}`;
+
     const pending = await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', pendingKey)
       .send(pendingBody)
       .expect(202);
+
     expect(pending.body).toMatchObject({
       status: 'PENDING_REFERENCE',
       code: 'PROCESSING_PENDING',
-      balance: '0.00',
+      balance: { amount: '0.00', currency: 'BRL' },
     });
 
     const replay = await request(app.getHttpServer())
@@ -581,6 +670,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .set('Idempotency-Key', pendingKey)
       .send(pendingBody)
       .expect(202);
+
     expect(replay.body).toEqual({
       ...pending.body,
       idempotentReplay: true,
@@ -589,17 +679,22 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
 
   it('resolves an out-of-order refund once its reference is processed', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '50.00' })
       .expect(201);
+
     const referenceExternalTransactionId = `late-reference-${randomUUID()}`;
+
     const refundBody = {
       ...transactionBody(wallet.body.walletId, playerId, '10.00'),
       kind: 'REFUND',
       referenceExternalTransactionId,
     };
+
     const refundKey = `out-of-order-refund-${randomUUID()}`;
+
     await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', refundKey)
@@ -617,9 +712,11 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .expect(200);
 
     const retry = app.get(RetryPendingReferencesUseCase);
+
     expect(await retry.execute(new Date(Date.now() + 10_000))).toBeGreaterThan(
       0,
     );
+
     const resolved = await request(app.getHttpServer())
       .get('/wagering/transactions/by-external')
       .query({
@@ -627,19 +724,27 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         externalTransactionId: refundBody.externalTransactionId,
       })
       .expect(200);
+
     expect(resolved.body).toMatchObject({
       status: 'PROCESSED',
-      balance: '50.00',
+      balance: { amount: '50.00', currency: 'BRL' },
     });
 
     const walletAfterRetry = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}`)
       .expect(200);
-    expect(walletAfterRetry.body.balance).toBe('50.00');
+
+    expect(walletAfterRetry.body.balance).toEqual({
+      amount: '50.00',
+      currency: 'BRL',
+    });
+
     const ledger = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .expect(200);
+
     expect(ledger.body.items).toHaveLength(3);
+
     expect(
       ledger.body.items.filter(
         ({
@@ -649,24 +754,30 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         }) => reversalOfTransactionId !== null,
       ),
     ).toHaveLength(1);
+
     await retry.execute(new Date(Date.now() + 20_000));
+
     const ledgerAfterReplay = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .expect(200);
+
     expect(ledgerAfterReplay.body.items).toHaveLength(3);
   });
 
   it('rolls back a refund without duplicating its reversal or diverging from the ledger', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '20.00' })
       .expect(201);
+
     const bet = await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', `refund-rollback-bet-${randomUUID()}`)
       .send(transactionBody(wallet.body.walletId, playerId, '5.00'))
       .expect(200);
+
     const refund = await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', `refund-rollback-refund-${randomUUID()}`)
@@ -686,9 +797,10 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         referenceTransactionId: refund.body.transactionId,
       })
       .expect(200);
+
     expect(rollback.body).toMatchObject({
       status: 'PROCESSED',
-      balance: '15.00',
+      balance: { amount: '15.00', currency: 'BRL' },
     });
 
     const duplicateRollback = await request(app.getHttpServer())
@@ -700,11 +812,13 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         referenceTransactionId: refund.body.transactionId,
       })
       .expect(422);
+
     expect(duplicateRollback.body.code).toBe('INVALID_REFERENCE');
 
     const reconciliation = await request(app.getHttpServer())
       .post(`/wallets/${wallet.body.walletId}/reconciliation`)
       .expect(201);
+
     expect(reconciliation.body).toMatchObject({
       walletBalance: '15.00',
       ledgerBalance: '15.00',
@@ -715,17 +829,21 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
 
   it('rejects a late reference from another round without applying a reversal', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '20.00' })
       .expect(201);
+
     const referenceExternalTransactionId = `wrong-round-reference-${randomUUID()}`;
+
     const refundBody = {
       ...transactionBody(wallet.body.walletId, playerId, '5.00'),
       kind: 'REFUND',
       roundId: 'refund-round',
       referenceExternalTransactionId,
     };
+
     const refund = await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', `wrong-round-refund-${randomUUID()}`)
@@ -741,6 +859,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         roundId: 'different-round',
       })
       .expect(200);
+
     await app
       .get(RetryPendingReferencesUseCase)
       .execute(new Date(Date.now() + 10_000));
@@ -748,14 +867,18 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
     const rejected = await request(app.getHttpServer())
       .get(`/wagering/transactions/${refund.body.transactionId}`)
       .expect(200);
+
     expect(rejected.body).toMatchObject({
       status: 'REJECTED',
       failureCode: 'INVALID_REFERENCE',
     });
+
     const ledger = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .expect(200);
+
     expect(ledger.body.items).toHaveLength(2);
+
     expect(
       ledger.body.items.every(
         ({
@@ -769,16 +892,20 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
 
   it('rejects an unresolved reference after five retries and records one outbox event', async () => {
     const playerId = randomUUID();
+
     const wallet = await request(app.getHttpServer())
       .post('/wallets')
       .send({ playerId, currency: 'BRL', initialBalance: '25.00' })
       .expect(201);
+
     const body = {
       ...transactionBody(wallet.body.walletId, playerId, '5.00'),
       kind: 'REFUND',
       referenceExternalTransactionId: `never-arrived-${randomUUID()}`,
     };
+
     const key = `expired-reference-${randomUUID()}`;
+
     const pending = await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', key)
@@ -786,21 +913,29 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .expect(202);
 
     const retry = app.get(RetryPendingReferencesUseCase);
+
     let now = new Date(Date.now() + 10_000);
+
     const parallelRetries = await Promise.all([
       retry.execute(now),
       retry.execute(now),
     ]);
+
     expect(parallelRetries.every((count) => count > 0)).toBe(true);
+
     const attemptRows = await appOrm.em.getConnection().execute(
       `select reference_attempts as attempts
        from "${schemaName}".wager_transactions
        where id = ?`,
       [pending.body.transactionId],
     );
+
     const attemptsAfterParallelRetry = attemptRows as { attempts: number }[];
+
     expect(attemptsAfterParallelRetry[0].attempts).toBe(1);
+
     now = new Date(now.getTime() + 100_000);
+
     for (let attempt = 1; attempt < 5; attempt += 1) {
       expect(await retry.execute(now)).toBeGreaterThan(0);
       now = new Date(now.getTime() + 100_000);
@@ -809,24 +944,29 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
     const rejected = await request(app.getHttpServer())
       .get(`/wagering/transactions/${pending.body.transactionId}`)
       .expect(200);
+
     expect(rejected.body).toMatchObject({
       status: 'REJECTED',
       failureCode: 'REFERENCE_NOT_FOUND',
-      balance: '25.00',
+      balance: { amount: '25.00', currency: 'BRL' },
     });
+
     const rejectionReplay = await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', key)
       .send(body)
       .expect(422);
+
     expect(rejectionReplay.body).toMatchObject({
       code: 'REFERENCE_NOT_FOUND',
       status: 'REJECTED',
-      balance: '25.00',
+      balance: { amount: '25.00', currency: 'BRL' },
     });
+
     const ledger = await request(app.getHttpServer())
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .expect(200);
+
     expect(ledger.body.items).toHaveLength(1);
 
     const outboxResult = await appOrm.em.getConnection().execute(
@@ -835,12 +975,19 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
        where aggregate_id = ? and event_type = ?`,
       [pending.body.transactionId, 'WagerTransactionReferenceExpired'],
     );
+
     const outboxRows = outboxResult as { count: number }[];
+
     expect(outboxRows[0].count).toBe(1);
     expect(await retry.execute(now)).toBe(0);
   });
 
-  function transactionBody(walletId: string, playerId: string, amount: string) {
+  // Cria um corpo padrão para as requisições de transação dos testes.
+  function transactionBody(
+    walletId: string,
+    playerId: string,
+    amount: string,
+  ) {
     return {
       providerId: 'api-test-provider',
       externalTransactionId: `external-${randomUUID()}`,
