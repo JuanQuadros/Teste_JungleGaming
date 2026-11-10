@@ -1,6 +1,7 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { GetQueueUrlCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { MetricsService } from './observability/metrics.service.js';
 
 @Controller('health')
 export class HealthController {
@@ -8,6 +9,7 @@ export class HealthController {
   constructor(
     private readonly orm: MikroORM,
     private readonly sqsClient: SQSClient,
+    private readonly metrics: MetricsService,
   ) {}
 
   // A verificação de atividade confirma apenas se o processo responde a requisições HTTP.
@@ -30,11 +32,18 @@ export class HealthController {
       ),
     ]);
 
-    const checks = {
-      postgres: results[0].status === 'fulfilled' ? 'ok' : 'unavailable',
-      transactionsQueue: results[1].status === 'fulfilled' ? 'ok' : 'unavailable',
-      deadLetterQueue: results[2].status === 'fulfilled' ? 'ok' : 'unavailable',
+    const checkStatus = (
+      result: PromiseSettledResult<unknown>,
+    ): 'ok' | 'unavailable' =>
+      result.status === 'fulfilled' ? 'ok' : 'unavailable';
+    const checks: Record<string, 'ok' | 'unavailable'> = {
+      postgres: checkStatus(results[0]),
+      transactionsQueue: checkStatus(results[1]),
+      deadLetterQueue: checkStatus(results[2]),
     };
+    this.metrics.recordHealthCheck('postgres', checks.postgres);
+    this.metrics.recordHealthCheck('transactions_queue', checks.transactionsQueue);
+    this.metrics.recordHealthCheck('dead_letter_queue', checks.deadLetterQueue);
 
     if (Object.values(checks).some((status) => status !== 'ok')) {
       throw new ServiceUnavailableException({

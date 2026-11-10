@@ -84,9 +84,9 @@ A migration `001-initial-structure` cria a estrutura inicial de wallets, transa�
 
 ## Observabilidade e testes
 
-Logs estruturados devem incluir correlação, messageId, transactionId, walletId e providerId, sem registrar dados sensíveis ou valores financeiros completos. Métricas mínimas: transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock, atraso da outbox e latência.
+Logs HTTP estruturados em JSON incluem `correlationId`, método, rota normalizada, status e duração, sem registrar payloads ou valores financeiros. O cabeçalho `X-Correlation-Id` é validado e propagado na resposta; valores inválidos são substituídos por UUID. `GET /metrics` expõe métricas Prometheus: `http_server_requests_total` (contador por método, rota e status), `http_server_request_duration_seconds` (histograma em segundos) e `health_dependency_checks_total` (contador por dependência e resultado). Métricas de transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock e atraso da outbox ainda dependem da implementação dos respectivos fluxos e devem ser instrumentadas neles.
 
-Os testes unitários de `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos e regras de reversão. Ainda serão necessários testes de integração real com PostgreSQL e LocalStack, paralelismo, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry` e da infraestrutura de métricas/correlação cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos, regras de reversão e exposição de métricas. Ainda serão necessários testes de integração real com PostgreSQL e LocalStack, paralelismo, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
 
 ## Decisões ainda revisáveis
 

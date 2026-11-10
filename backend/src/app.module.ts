@@ -1,10 +1,20 @@
-import { Module } from '@nestjs/common';
+import {
+  MiddlewareConsumer,
+  Module,
+  NestModule,
+  RequestMethod,
+} from '@nestjs/common';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { mikroOrmConfig } from './mikro-orm.config.js';
 import { HealthController } from './health.controller.js';
 import { SQSClient } from '@aws-sdk/client-sqs';
+import { HttpObservabilityMiddleware } from './observability/http-observability.middleware.js';
+import { MetricsController } from './observability/metrics.controller.js';
+import { MetricsService } from './observability/metrics.service.js';
+import { RequestContext } from './observability/request-context.js';
+import { StructuredLogger } from './observability/structured-logger.js';
 
 // Compartilha o cliente AWS e permite apontá-lo ao LocalStack no ambiente local.
 const sqsClientProvider = {
@@ -26,7 +36,20 @@ const sqsClientProvider = {
 @Module({
   // Registra uma conexão compartilhada com o banco para injeção nos provedores do NestJS.
   imports: [MikroOrmModule.forRoot(mikroOrmConfig)],
-  controllers: [AppController, HealthController],
-  providers: [AppService, sqsClientProvider],
+  controllers: [AppController, HealthController, MetricsController],
+  providers: [
+    AppService,
+    sqsClientProvider,
+    RequestContext,
+    MetricsService,
+    StructuredLogger,
+    HttpObservabilityMiddleware,
+  ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer
+      .apply(HttpObservabilityMiddleware)
+      .forRoutes({ path: '*path', method: RequestMethod.ALL });
+  }
+}
