@@ -25,6 +25,7 @@ export type TransactionMetricStatus =
 @Injectable()
 export class MetricsService {
   private readonly counters = new Map<string, MetricSample>();
+  private readonly gauges = new Map<string, MetricSample>();
   private readonly durations = new Map<string, HistogramGroup>();
 
   recordHttpRequest(
@@ -68,11 +69,21 @@ export class MetricsService {
     this.increment('wager_retries_total', { source, result });
   }
 
-  recordDeadLetterMessage(): void {
-    this.increment('sqs_dead_letter_messages_total', {});
+  recordDeadLetterQueueDepth(
+    queue: 'transactions' | 'events',
+    depth: number,
+  ): void {
+    if (!Number.isSafeInteger(depth) || depth < 0) {
+      throw new RangeError(
+        'A profundidade da fila deve ser inteira e não negativa.',
+      );
+    }
+    const labels = { queue };
+    const name = 'sqs_dead_letter_queue_messages';
+    this.gauges.set(this.key(name, labels), { name, labels, value: depth });
   }
 
-  recordLockConflict(lockType: 'idempotency' | 'wallet' | 'outbox'): void {
+  recordLockConflict(lockType: 'transaction' | 'outbox'): void {
     this.increment('database_lock_conflicts_total', { lock_type: lockType });
   }
 
@@ -112,9 +123,9 @@ export class MetricsService {
       '# HELP wager_retries_total Tentativas e agendamentos de retry por origem e resultado.',
       '# TYPE wager_retries_total counter',
       ...this.renderCounters('wager_retries_total'),
-      '# HELP sqs_dead_letter_messages_total Mensagens encaminhadas para a dead-letter queue.',
-      '# TYPE sqs_dead_letter_messages_total counter',
-      ...this.renderCounters('sqs_dead_letter_messages_total'),
+      '# HELP sqs_dead_letter_queue_messages Número aproximado de mensagens atualmente na dead-letter queue.',
+      '# TYPE sqs_dead_letter_queue_messages gauge',
+      ...this.renderGauges('sqs_dead_letter_queue_messages'),
       '# HELP database_lock_conflicts_total Conflitos de lock detectados por tipo.',
       '# TYPE database_lock_conflicts_total counter',
       ...this.renderCounters('database_lock_conflicts_total'),
@@ -166,6 +177,14 @@ export class MetricsService {
 
   private renderCounters(name: string): string[] {
     return [...this.counters.values()]
+      .filter((sample) => sample.name === name)
+      .map((sample) =>
+        this.renderSample(sample.name, sample.labels, sample.value),
+      );
+  }
+
+  private renderGauges(name: string): string[] {
+    return [...this.gauges.values()]
       .filter((sample) => sample.name === name)
       .map((sample) =>
         this.renderSample(sample.name, sample.labels, sample.value),

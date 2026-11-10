@@ -47,8 +47,8 @@ describe('MetricsService', () => {
     metrics.recordDuplicateTransaction('sqs');
     metrics.recordRetry('pending_reference', 'scheduled');
     metrics.recordRetry('sqs', 'failed');
-    metrics.recordDeadLetterMessage();
-    metrics.recordLockConflict('wallet');
+    metrics.recordDeadLetterQueueDepth('transactions', 3);
+    metrics.recordLockConflict('transaction');
 
     const output = metrics.renderPrometheus();
 
@@ -70,9 +70,12 @@ describe('MetricsService', () => {
     expect(output).toContain(
       'wager_retries_total{source="sqs",result="failed"} 1',
     );
-    expect(output).toContain('sqs_dead_letter_messages_total 1');
+    expect(output).toContain('# TYPE sqs_dead_letter_queue_messages gauge');
     expect(output).toContain(
-      'database_lock_conflicts_total{lock_type="wallet"} 1',
+      'sqs_dead_letter_queue_messages{queue="transactions"} 3',
+    );
+    expect(output).toContain(
+      'database_lock_conflicts_total{lock_type="transaction"} 1',
     );
   });
 
@@ -102,5 +105,13 @@ describe('MetricsService', () => {
     expect(() =>
       metrics.recordTransactionProcessingDuration('http', 'failed', -1),
     ).toThrow(RangeError);
+  });
+
+  it('rejeita profundidade de DLQ inválida', () => {
+    const metrics = new MetricsService();
+
+    expect(() => metrics.recordDeadLetterQueueDepth('events', -1)).toThrow(
+      RangeError,
+    );
   });
 });

@@ -8,6 +8,7 @@ import {
 import { EntityManager } from '@mikro-orm/postgresql';
 import { describe, expect, it, vi } from 'vitest';
 import { SubmitWagerTransactionUseCase } from '../../application/wager-processing/submit-wager-transaction.use-case.js';
+import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 import { WagerTransactionSqsConsumer } from './wager-transaction-sqs.consumer.js';
 
@@ -57,12 +58,13 @@ describe('WagerTransactionSqsConsumer', () => {
 
   it('leaves a failed message undeleted and schedules its retry', async () => {
     const retryScheduled = deferred<void>();
-    const { consumer, send } = createConsumer(async () => {
+    const { consumer, send, metrics } = createConsumer(async () => {
       throw new Error('database unavailable');
     }, retryScheduled);
 
     consumer.onModuleInit();
     await retryScheduled.promise;
+    await new Promise((resolve) => setImmediate(resolve));
     expect(
       send.mock.calls.some(
         ([command]) => command instanceof DeleteMessageCommand,
@@ -72,6 +74,9 @@ describe('WagerTransactionSqsConsumer', () => {
       ([command]) => command instanceof ChangeMessageVisibilityCommand,
     )?.[0] as ChangeMessageVisibilityCommand | undefined;
     expect(retryCommand?.input.VisibilityTimeout).toBe(1);
+    expect(metrics.renderPrometheus()).toContain(
+      'wager_retries_total{source="sqs",result="scheduled"} 1',
+    );
     await consumer.onModuleDestroy();
   });
 });
@@ -130,6 +135,7 @@ function createConsumer(
   const submitTransaction = {
     execute,
   } as unknown as SubmitWagerTransactionUseCase;
+  const metrics = new MetricsService();
   const logger = {
     errorEvent: vi.fn(),
   } as unknown as StructuredLogger;
@@ -137,11 +143,12 @@ function createConsumer(
     fakeClient,
     entityManager,
     submitTransaction,
+    metrics,
     logger,
   );
   if (completed === undefined)
     throw new Error('Completion signal is required.');
-  return { consumer, send };
+  return { consumer, send, metrics };
 }
 
 function deferred<T>() {

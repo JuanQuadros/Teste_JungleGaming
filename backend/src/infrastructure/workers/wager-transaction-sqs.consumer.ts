@@ -16,6 +16,7 @@ import { EntityManager } from '@mikro-orm/postgresql';
 import { createHash } from 'node:crypto';
 import { SubmitWagerTransactionUseCase } from '../../application/wager-processing/submit-wager-transaction.use-case.js';
 import { parseQueueWagerTransactionMessage } from '../../application/wager-processing/wager-transaction-request.js';
+import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 
 const QUEUE_NAME = 'wager-transactions.fifo';
@@ -37,6 +38,7 @@ export class WagerTransactionSqsConsumer
     private readonly sqsClient: SQSClient,
     private readonly entityManager: EntityManager,
     private readonly submitTransaction: SubmitWagerTransactionUseCase,
+    private readonly metrics: MetricsService,
     @Inject(StructuredLogger) private readonly logger: StructuredLogger,
   ) {}
 
@@ -148,14 +150,20 @@ export class WagerTransactionSqsConsumer
           ReceiptHandle: receiptHandle,
         }),
       );
+      if (receiveCount > 1) {
+        this.metrics.recordRetry('sqs', 'succeeded');
+      }
     } catch (error) {
+      const retryScheduled = receiptHandle
+        ? await this.deferRetry(queueUrl, receiptHandle, receiveCount)
+        : false;
+      this.metrics.recordRetry('sqs', retryScheduled ? 'scheduled' : 'failed');
       this.logger.errorEvent('sqs_wager_message_processing_failed', {
         errorName: error instanceof Error ? error.name : 'UnknownError',
-        receiveCount: Number.isFinite(receiveCount) ? receiveCount : 0,
+        messageId: messageId ?? 'unknown',
+        receiveCount,
+        retryScheduled: retryScheduled ? 1 : 0,
       });
-      if (receiptHandle) {
-        await this.deferRetry(queueUrl, receiptHandle, receiveCount);
-      }
     }
   }
 
@@ -163,7 +171,7 @@ export class WagerTransactionSqsConsumer
     queueUrl: string,
     receiptHandle: string,
     receiveCount: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const exponent = Math.max(0, Math.min(receiveCount - 1, 6));
     const delaySeconds = Math.min(2 ** exponent, MAX_RETRY_DELAY_SECONDS);
     try {
@@ -174,11 +182,13 @@ export class WagerTransactionSqsConsumer
           VisibilityTimeout: delaySeconds,
         }),
       );
+      return true;
     } catch (error) {
       this.logger.errorEvent('sqs_wager_message_retry_schedule_failed', {
         errorName: error instanceof Error ? error.name : 'UnknownError',
-        receiveCount: Number.isFinite(receiveCount) ? receiveCount : 0,
+        receiveCount,
       });
+      return false;
     }
   }
 

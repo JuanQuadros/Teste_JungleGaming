@@ -26,6 +26,7 @@ import { SubmitWagerTransactionUseCase } from './application/wager-processing/su
 import { WagerTransactionSqsConsumer } from './infrastructure/workers/wager-transaction-sqs.consumer.js';
 import { OutboxSqsPublisherWorker } from './infrastructure/workers/outbox-sqs-publisher.worker.js';
 import { SqsClientShutdownProvider } from './infrastructure/workers/sqs-client-shutdown.provider.js';
+import { SqsDeadLetterQueueMetricsWorker } from './infrastructure/workers/sqs-dead-letter-queue-metrics.worker.js';
 
 // Compartilha o cliente AWS e permite apontá-lo ao LocalStack no ambiente local.
 const sqsClientProvider = {
@@ -63,6 +64,7 @@ const sqsClientProvider = {
     PendingReferenceRetryWorker,
     WagerTransactionSqsConsumer,
     OutboxSqsPublisherWorker,
+    SqsDeadLetterQueueMetricsWorker,
     SqsClientShutdownProvider,
     sqsClientProvider,
     RequestContext,

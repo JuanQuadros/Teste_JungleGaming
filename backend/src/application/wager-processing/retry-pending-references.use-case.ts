@@ -7,6 +7,7 @@ import { WagerTransactionStatus } from '../../domain/wager-transaction.js';
 import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 import { ProcessWagerTransactionUseCase } from './process-wager-transaction.use-case.js';
+import { isDatabaseLockConflict } from './database-lock-conflict.js';
 
 @Injectable()
 export class RetryPendingReferencesUseCase {
@@ -52,6 +53,9 @@ export class RetryPendingReferencesUseCase {
       } catch (error) {
         const durationSeconds =
           Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+        if (isDatabaseLockConflict(error)) {
+          this.metrics.recordLockConflict('transaction');
+        }
         this.metrics.recordRetry('pending_reference', 'failed');
         this.logger.errorEvent('pending_reference_retry_failed', {
           errorName: error instanceof Error ? error.name : 'UnknownError',

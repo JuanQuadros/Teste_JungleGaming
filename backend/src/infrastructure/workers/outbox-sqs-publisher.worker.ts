@@ -16,6 +16,8 @@ import {
   type OutboxEventRepositoryPort,
   type PendingOutboxEvent,
 } from '../../application/ports/persistence.repositories.js';
+import { isDatabaseLockConflict } from '../../application/wager-processing/database-lock-conflict.js';
+import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 
 const QUEUE_NAME = 'wager-events.fifo';
@@ -36,6 +38,7 @@ export class OutboxSqsPublisherWorker implements OnModuleInit, OnModuleDestroy {
     private readonly entityManager: EntityManager,
     @Inject(OUTBOX_EVENT_REPOSITORY)
     private readonly outbox: OutboxEventRepositoryPort,
+    private readonly metrics: MetricsService,
     @Inject(StructuredLogger) private readonly logger: StructuredLogger,
   ) {}
 
@@ -57,6 +60,9 @@ export class OutboxSqsPublisherWorker implements OnModuleInit, OnModuleDestroy {
       () => this.publishBatch(),
     )
       .catch((error: unknown) => {
+        if (isDatabaseLockConflict(error)) {
+          this.metrics.recordLockConflict('outbox');
+        }
         this.logger.errorEvent('outbox_publish_batch_failed', {
           errorName: error instanceof Error ? error.name : 'UnknownError',
         });
@@ -101,6 +107,7 @@ export class OutboxSqsPublisherWorker implements OnModuleInit, OnModuleDestroy {
     queueUrl: string,
     event: PendingOutboxEvent,
   ): Promise<void> {
+    const startedAt = process.hrtime.bigint();
     try {
       await this.sqsClient.send(
         new SendMessageCommand({
@@ -116,13 +123,29 @@ export class OutboxSqsPublisherWorker implements OnModuleInit, OnModuleDestroy {
           }),
         }),
       );
+      const publishedAt = new Date();
+      this.metrics.recordOutboxPublishDelay(
+        Math.max(0, publishedAt.getTime() - event.occurredAt.getTime()) / 1_000,
+      );
+      if (event.attempts > 1) {
+        this.metrics.recordRetry('outbox', 'succeeded');
+      }
       const marked = await this.outbox.markPublished(
         event.id,
         event.attempts,
-        new Date(),
+        publishedAt,
       );
+      this.logger.info('outbox_event_published', {
+        eventId: event.id,
+        aggregateId: event.aggregateId,
+        attempt: event.attempts,
+        durationSeconds:
+          Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
       if (!marked) {
         this.logger.errorEvent('outbox_publish_mark_lost', {
+          eventId: event.id,
+          aggregateId: event.aggregateId,
           attempt: event.attempts,
         });
       }
@@ -140,16 +163,29 @@ export class OutboxSqsPublisherWorker implements OnModuleInit, OnModuleDestroy {
           retryAt,
         );
       } catch (retryError) {
+        if (isDatabaseLockConflict(retryError)) {
+          this.metrics.recordLockConflict('outbox');
+        }
         this.logger.errorEvent('outbox_retry_schedule_failed', {
           errorName:
             retryError instanceof Error ? retryError.name : 'UnknownError',
+          eventId: event.id,
+          aggregateId: event.aggregateId,
           attempt: event.attempts,
         });
       }
+      if (isDatabaseLockConflict(error)) {
+        this.metrics.recordLockConflict('outbox');
+      }
+      this.metrics.recordRetry('outbox', scheduled ? 'scheduled' : 'failed');
       this.logger.errorEvent('outbox_publish_failed', {
         errorName: error instanceof Error ? error.name : 'UnknownError',
+        eventId: event.id,
+        aggregateId: event.aggregateId,
         attempt: event.attempts,
         retryScheduled: scheduled ? 1 : 0,
+        durationSeconds:
+          Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
       });
     }
   }

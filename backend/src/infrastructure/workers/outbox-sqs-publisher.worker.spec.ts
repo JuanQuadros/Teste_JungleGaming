@@ -9,6 +9,7 @@ import type {
   OutboxEventRepositoryPort,
   PendingOutboxEvent,
 } from '../../application/ports/persistence.repositories.js';
+import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 import { OutboxSqsPublisherWorker } from './outbox-sqs-publisher.worker.js';
 
@@ -40,7 +41,8 @@ describe('OutboxSqsPublisherWorker', () => {
       throw new Error('Unexpected SQS command in test.');
     });
     const repository = createRepository({ markPublished });
-    const worker = createWorker(send, repository);
+    const metrics = new MetricsService();
+    const worker = createWorker(send, repository, metrics);
 
     worker.onModuleInit();
     const command = await sent.promise;
@@ -62,6 +64,9 @@ describe('OutboxSqsPublisherWorker', () => {
       pendingEvent.id,
       pendingEvent.attempts,
       expect.any(Date),
+    );
+    expect(metrics.renderPrometheus()).toContain(
+      'outbox_publish_delay_seconds_count 1',
     );
     await worker.onModuleDestroy();
   });
@@ -87,13 +92,18 @@ describe('OutboxSqsPublisherWorker', () => {
       throw new Error('Unexpected SQS command in test.');
     });
     const repository = createRepository({ markPublished, scheduleRetry });
-    const worker = createWorker(send, repository);
+    const metrics = new MetricsService();
+    const worker = createWorker(send, repository, metrics);
 
     worker.onModuleInit();
     await retried.promise;
+    await new Promise((resolve) => setImmediate(resolve));
     const retryAt = scheduledTimes[0];
     expect(retryAt.getTime()).toBeGreaterThan(Date.now());
     expect(markPublished).not.toHaveBeenCalled();
+    expect(metrics.renderPrometheus()).toContain(
+      'wager_retries_total{source="outbox",result="scheduled"} 1',
+    );
     await worker.onModuleDestroy();
   });
 });
@@ -101,6 +111,7 @@ describe('OutboxSqsPublisherWorker', () => {
 function createWorker(
   send: ReturnType<typeof vi.fn>,
   repository: OutboxEventRepositoryPort,
+  metrics = new MetricsService(),
 ): OutboxSqsPublisherWorker {
   const fakeClient = { send, destroy: vi.fn() } as unknown as SQSClient;
   const entityManager = {
@@ -114,6 +125,7 @@ function createWorker(
     fakeClient,
     entityManager,
     repository,
+    metrics,
     logger,
   );
 }

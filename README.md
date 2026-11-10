@@ -80,8 +80,10 @@ O endpoint `GET /metrics` expõe métricas Prometheus para requisições HTTP,
 latência, verificações de dependências do readiness e métricas de negócio.
 `wager_transactions_total` e `wager_transaction_duplicates_total` são
 contadores; `wager_retries_total` registra retries por origem/resultado;
-`sqs_dead_letter_messages_total` conta mensagens na DLQ;
-`database_lock_conflicts_total` conta conflitos detectados.
+`sqs_dead_letter_queue_messages` mostra a profundidade aproximada atual das
+DLQs, atualizada a cada 15 segundos a partir dos atributos aproximados do SQS;
+`database_lock_conflicts_total` conta deadlocks, locks indisponíveis e falhas
+de serialização do PostgreSQL.
 `wager_transaction_processing_duration_seconds`,
 `http_server_request_duration_seconds` e `outbox_publish_delay_seconds` são
 histogramas em segundos. `GET /health/live` verifica somente se o processo está

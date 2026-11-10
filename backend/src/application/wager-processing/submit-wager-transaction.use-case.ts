@@ -10,6 +10,7 @@ import type { WagerTransactionRequestDto } from './wager-transaction-request.js'
 import { ProcessWagerTransactionUseCase } from './process-wager-transaction.use-case.js';
 import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
+import { isDatabaseLockConflict } from './database-lock-conflict.js';
 
 @Injectable()
 export class SubmitWagerTransactionUseCase {
@@ -76,6 +77,16 @@ export class SubmitWagerTransactionUseCase {
           return null;
         }
 
+        if (result.id !== transaction.id) {
+          this.metrics.recordDuplicateTransaction(source);
+          this.logger.info('wager_transaction_duplicate', {
+            source,
+            transactionId: result.id,
+            walletId: result.walletId,
+            providerId: result.providerId,
+            ...(inboxMessage ? { messageId: inboxMessage.messageId } : {}),
+          });
+        }
         const status = this.metricStatus(result.status);
         this.metrics.recordTransactionStatus(source, status);
         this.metrics.recordTransactionProcessingDuration(
@@ -97,6 +108,9 @@ export class SubmitWagerTransactionUseCase {
       .catch((error: unknown) => {
         const durationSeconds =
           Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+        if (isDatabaseLockConflict(error)) {
+          this.metrics.recordLockConflict('transaction');
+        }
         this.metrics.recordTransactionStatus(source, 'failed');
         this.metrics.recordTransactionProcessingDuration(
           source,
