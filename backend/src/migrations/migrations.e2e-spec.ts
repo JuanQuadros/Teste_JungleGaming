@@ -28,7 +28,60 @@ describe('Database migrations (PostgreSQL)', () => {
       '003-wallet-version-zero',
       '004-idempotency-response-balance',
       '005-pending-reference-retries',
+      '006-wallet-version-one',
+      '007-wallet-ledger-balance-consistency',
+      '008-ledger-truncate-protection',
     ]);
+
+    const newWallet = (await schema.orm.em.getConnection().execute(
+      `insert into "${schema.name}".wallets (player_id, currency)
+       values (?, 'BRL')
+       returning version`,
+      ['00000000-0000-4000-8000-000000000012'],
+    )) as { version: number }[];
+    expect(newWallet[0].version).toBe(1);
+    await expect(
+      schema.orm.em.transactional(async (em) => {
+        await em.getConnection().execute(
+          `update "${schema.name}".wallets
+           set balance = 1.00
+           where player_id = ?`,
+          ['00000000-0000-4000-8000-000000000012'],
+          'all',
+          em.getTransactionContext(),
+        );
+      }),
+    ).rejects.toThrow('balance does not match its ledger');
+    await expect(
+      schema.orm.em.getConnection().execute(
+        `insert into "${schema.name}".wallets (player_id, currency, version)
+         values (?, 'BRL', 0)`,
+        ['00000000-0000-4000-8000-000000000013'],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      schema.orm.em
+        .getConnection()
+        .execute(`truncate table "${schema.name}".wallet_ledger_entries`),
+    ).rejects.toThrow('wallet ledger entries are immutable');
+
+    await schema.migrateDown();
+    await schema.migrateDown();
+    await schema.migrateDown();
+    await schema.orm.em.getConnection().execute(
+      `insert into "${schema.name}".wallets (id, player_id, currency, version)
+       values (?, ?, 'BRL', 0)`,
+      [
+        '00000000-0000-4000-8000-000000000014',
+        '00000000-0000-4000-8000-000000000015',
+      ],
+    );
+    await schema.migrateUp();
+    const upgradedWallet = (await schema.orm.em.getConnection().execute(
+      `select version from "${schema.name}".wallets
+         where id = '00000000-0000-4000-8000-000000000014'`,
+    )) as { version: number }[];
+    expect(upgradedWallet[0].version).toBe(1);
 
     await expect(
       schema.orm.em.transactional(async (em) => {
@@ -44,11 +97,18 @@ describe('Database migrations (PostgreSQL)', () => {
 
     await schema.orm.em.getConnection().execute(
       `insert into "${schema.name}".wallets (id, player_id, currency, version)
-       values (?, ?, 'BRL', 0)`,
+       values (?, ?, 'BRL', 1)`,
       [
         '00000000-0000-4000-8000-000000000010',
         '00000000-0000-4000-8000-000000000011',
       ],
+    );
+    await schema.migrateDown();
+    await schema.migrateDown();
+    await schema.migrateDown();
+    await schema.orm.em.getConnection().execute(
+      `update "${schema.name}".wallets set version = 0
+       where id = '00000000-0000-4000-8000-000000000010'`,
     );
     await schema.migrateDown();
     await schema.migrateDown();
@@ -64,6 +124,14 @@ describe('Database migrations (PostgreSQL)', () => {
     await schema.orm.em.getConnection().execute(
       `delete from "${schema.name}".wallets
        where id = '00000000-0000-4000-8000-000000000010'`,
+    );
+    await schema.orm.em.getConnection().execute(
+      `delete from "${schema.name}".wallets
+       where id = '00000000-0000-4000-8000-000000000014'`,
+    );
+    await schema.orm.em.getConnection().execute(
+      `delete from "${schema.name}".wallets
+       where id = '00000000-0000-4000-8000-000000000012'`,
     );
     for (let index = 0; index < 3; index += 1) {
       await schema.migrateDown();

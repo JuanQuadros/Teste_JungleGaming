@@ -23,6 +23,21 @@ import {
   name as pendingReferenceRetriesName,
   up as pendingReferenceRetriesUp,
 } from './005-pending-reference-retries.js';
+import {
+  down as walletVersionOneDown,
+  name as walletVersionOneName,
+  up as walletVersionOneUp,
+} from './006-wallet-version-one.js';
+import {
+  down as walletLedgerBalanceDown,
+  name as walletLedgerBalanceName,
+  up as walletLedgerBalanceUp,
+} from './007-wallet-ledger-balance-consistency.js';
+import {
+  down as ledgerTruncateProtectionDown,
+  name as ledgerTruncateProtectionName,
+  up as ledgerTruncateProtectionUp,
+} from './008-ledger-truncate-protection.js';
 
 export const migrations = [
   { name: initialName, up: initialUp, down: initialDown },
@@ -45,5 +60,20 @@ export const migrations = [
     name: pendingReferenceRetriesName,
     up: pendingReferenceRetriesUp,
     down: pendingReferenceRetriesDown,
+  },
+  {
+    name: walletVersionOneName,
+    up: walletVersionOneUp,
+    down: walletVersionOneDown,
+  },
+  {
+    name: walletLedgerBalanceName,
+    up: walletLedgerBalanceUp,
+    down: walletLedgerBalanceDown,
+  },
+  {
+    name: ledgerTruncateProtectionName,
+    up: ledgerTruncateProtectionUp,
+    down: ledgerTruncateProtectionDown,
   },
 ];

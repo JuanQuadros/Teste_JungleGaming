@@ -27,13 +27,17 @@ export class CreateWalletUseCase {
   ) {}
 
   async execute(input: CreateWalletInput): Promise<Wallet> {
-    const wallet = Wallet.open(randomUUID(), input.playerId, input.currency);
+    const wallet = Wallet.open(
+      randomUUID(),
+      input.playerId,
+      input.currency,
+      input.initialBalance,
+    );
     let openingTransaction: WagerTransaction | null = null;
     let openingEntry: WalletLedgerEntry | null = null;
     const outboxEvents: OutboxEvent[] = [];
 
     if (input.initialBalance.isPositive()) {
-      wallet.credit(input.initialBalance);
       const openingId = randomUUID();
       const internalKey = `internal:opening:${wallet.id}`;
       openingTransaction = WagerTransaction.createInternalOpening({

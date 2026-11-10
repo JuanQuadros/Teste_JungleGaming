@@ -10,15 +10,15 @@ const money = (amount: string, currency = 'BRL') =>
   Money.from({ amount, currency });
 
 describe('Wallet', () => {
-  // Confere que uma wallet nova começa sem saldo e com versão zero.
-  it('abre com saldo zero na moeda informada e versão inicial zero', () => {
+  // Confere que uma wallet nova começa sem saldo e na primeira versão.
+  it('abre com saldo zero na moeda informada e versão inicial um', () => {
     const wallet = Wallet.open('wallet-1', 'player-1', 'BRL');
 
     expect(wallet.balance.toJSON()).toEqual({
       amount: '0.00',
       currency: 'BRL',
     });
-    expect(wallet.version).toBe(0);
+    expect(wallet.version).toBe(1);
   });
 
   // Garante que todo crédito aumenta o saldo e avança a versão uma única vez.
@@ -31,7 +31,7 @@ describe('Wallet', () => {
       amount: '25.50',
       currency: 'BRL',
     });
-    expect(wallet.version).toBe(1);
+    expect(wallet.version).toBe(2);
   });
 
   // Garante que o saldo nunca fica abaixo de zero, inclusive quando o débito é igual ao saldo.
@@ -42,7 +42,7 @@ describe('Wallet', () => {
     wallet.debit(money('25.50'));
 
     expect(wallet.balance.isZero()).toBe(true);
-    expect(wallet.version).toBe(2);
+    expect(wallet.version).toBe(3);
   });
 
   // Rejeita débito sem saldo suficiente e mantém o estado anterior intacto.
@@ -54,7 +54,7 @@ describe('Wallet', () => {
       InsufficientBalanceError,
     );
     expect(wallet.balance.toJSON().amount).toBe('10.00');
-    expect(wallet.version).toBe(1);
+    expect(wallet.version).toBe(2);
   });
 
   // Rejeita moeda incompatível antes de alterar o estado da wallet.
@@ -68,7 +68,7 @@ describe('Wallet', () => {
       InvalidWalletError,
     );
     expect(wallet.balance.toJSON().amount).toBe('0.00');
-    expect(wallet.version).toBe(0);
+    expect(wallet.version).toBe(1);
   });
 
   // Operações inválidas, como zero ou valor negativo, não podem gerar lançamentos implícitos.
@@ -80,7 +80,7 @@ describe('Wallet', () => {
     expect(() => wallet.credit(money('1.00').negate())).toThrow(
       InvalidWalletError,
     );
-    expect(wallet.version).toBe(0);
+    expect(wallet.version).toBe(1);
   });
 
   // Restaura wallets persistidas e verifica os invariantes de moeda, saldo e versão.

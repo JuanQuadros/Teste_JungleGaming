@@ -37,6 +37,18 @@ import {
   name as pendingReferenceRetriesName,
   up as pendingReferenceRetriesUp,
 } from '../../migrations/005-pending-reference-retries.js';
+import {
+  name as walletVersionOneName,
+  up as walletVersionOneUp,
+} from '../../migrations/006-wallet-version-one.js';
+import {
+  name as walletLedgerBalanceName,
+  up as walletLedgerBalanceUp,
+} from '../../migrations/007-wallet-ledger-balance-consistency.js';
+import {
+  name as ledgerTruncateProtectionName,
+  up as ledgerTruncateProtectionUp,
+} from '../../migrations/008-ledger-truncate-protection.js';
 import { RequestContext } from '../../observability/request-context.js';
 import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
@@ -54,6 +66,9 @@ const migrations = [
   walletVersionUp,
   responseBalanceUp,
   pendingReferenceRetriesUp,
+  walletVersionOneUp,
+  walletLedgerBalanceUp,
+  ledgerTruncateProtectionUp,
 ];
 
 describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
@@ -90,6 +105,9 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         walletVersionName,
         responseBalanceName,
         pendingReferenceRetriesName,
+        walletVersionOneName,
+        walletLedgerBalanceName,
+        ledgerTruncateProtectionName,
       ];
       for (const [index, statements] of migrations.entries()) {
         for (const statement of statements) {
@@ -219,7 +237,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .post('/wallets')
       .send({ playerId: randomUUID(), currency: 'BRL' })
       .expect(201);
-    expect(emptyWallet.body).toMatchObject({ balance: '0.00', version: 0 });
+    expect(emptyWallet.body).toMatchObject({ balance: '0.00', version: 1 });
     const emptyLedger = await request(app.getHttpServer())
       .get(`/wallets/${emptyWallet.body.walletId}/ledger`)
       .expect(200);
@@ -268,12 +286,20 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .set('Idempotency-Key', `reconcile-bet-${randomUUID()}`)
       .send(transactionBody(wallet.body.walletId, playerId, '5.00'))
       .expect(200);
+    await appOrm.em.getConnection().execute(
+      `alter table "${schemaName}".wallets
+       disable trigger wallets_ledger_balance_consistency`,
+    );
     await appOrm.em
       .getConnection()
       .execute(
         `update "${schemaName}".wallets set balance = '23.00' where id = ?`,
         [wallet.body.walletId],
       );
+    await appOrm.em.getConnection().execute(
+      `alter table "${schemaName}".wallets
+       enable trigger wallets_ledger_balance_consistency`,
+    );
     const readLedgerSnapshot = () =>
       appOrm.em.getConnection().execute(
         `select

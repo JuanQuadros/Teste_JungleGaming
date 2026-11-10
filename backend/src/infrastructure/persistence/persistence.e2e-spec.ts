@@ -25,7 +25,7 @@ describe('MikroORM persistence repositories (PostgreSQL)', () => {
     const migrations = result as { name: string }[];
 
     expect(migrations.map(({ name }) => name)).toContain(
-      '003-wallet-version-zero',
+      '008-ledger-truncate-protection',
     );
   });
 
@@ -71,7 +71,7 @@ describe('MikroORM persistence repositories (PostgreSQL)', () => {
         'BRL',
       );
       expect(creditedWallet?.balance.toJSON().amount).toBe('123.45');
-      expect(creditedWallet?.version).toBe(1);
+      expect(creditedWallet?.version).toBe(2);
 
       const transaction = WagerTransaction.create({
         id: transactionId,
@@ -145,7 +145,7 @@ describe('MikroORM persistence repositories (PostgreSQL)', () => {
 
       const finalWallet = await walletRepository.findById(walletId);
       expect(finalWallet?.balance.toJSON().amount).toBe('100.00');
-      expect(finalWallet?.version).toBe(2);
+      expect(finalWallet?.version).toBe(3);
     } finally {
       await entityManager.rollback();
       entityManager.clear();

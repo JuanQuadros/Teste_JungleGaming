@@ -6,7 +6,7 @@ import {
   WagerTransaction,
   WagerTransactionType,
 } from '../../domain/wager-transaction.js';
-import { Wallet } from '../../domain/wallet.js';
+import { CreateWalletUseCase } from '../wallet-management/create-wallet.use-case.js';
 import { mikroOrmConfig } from '../../mikro-orm.config.js';
 import { MetricsService } from '../../observability/metrics.service.js';
 import { RequestContext } from '../../observability/request-context.js';
@@ -36,6 +36,18 @@ import {
   name as pendingReferenceRetriesName,
   up as pendingReferenceRetriesUp,
 } from '../../migrations/005-pending-reference-retries.js';
+import {
+  name as walletVersionOneName,
+  up as walletVersionOneUp,
+} from '../../migrations/006-wallet-version-one.js';
+import {
+  name as walletLedgerBalanceName,
+  up as walletLedgerBalanceUp,
+} from '../../migrations/007-wallet-ledger-balance-consistency.js';
+import {
+  name as ledgerTruncateProtectionName,
+  up as ledgerTruncateProtectionUp,
+} from '../../migrations/008-ledger-truncate-protection.js';
 
 const migrations = [
   { name: initialName, up: initialUp },
@@ -43,13 +55,16 @@ const migrations = [
   { name: walletVersionName, up: walletVersionUp },
   { name: responseBalanceName, up: responseBalanceUp },
   { name: pendingReferenceRetriesName, up: pendingReferenceRetriesUp },
+  { name: walletVersionOneName, up: walletVersionOneUp },
+  { name: walletLedgerBalanceName, up: walletLedgerBalanceUp },
+  { name: ledgerTruncateProtectionName, up: ledgerTruncateProtectionUp },
 ];
 
 describe('Wager idempotency (PostgreSQL)', () => {
   let adminOrm: MikroORM;
   let appOrm: MikroORM;
   let schemaName: string;
-  const walletId = randomUUID();
+  let walletId: string;
   const playerId = randomUUID();
 
   beforeAll(async () => {
@@ -93,14 +108,14 @@ describe('Wager idempotency (PostgreSQL)', () => {
       }
     });
 
-    const entityManager = appOrm.em.fork();
-    await entityManager.transactional(async (em) => {
-      const wallets = new MikroOrmWalletRepository(em);
-      const wallet = Wallet.open(walletId, playerId, 'BRL');
-      wallet.credit(Money.from({ amount: '100.00', currency: 'BRL' }));
-      wallets.insert(wallet);
-      await em.flush();
+    const wallet = await new CreateWalletUseCase(
+      new MikroOrmWalletTransactionUnitOfWork(appOrm.em.fork()),
+    ).execute({
+      playerId,
+      currency: 'BRL',
+      initialBalance: Money.from({ amount: '100.00', currency: 'BRL' }),
     });
+    walletId = wallet.id;
   }, 30_000);
 
   afterAll(async () => {
@@ -207,7 +222,8 @@ describe('Wager idempotency (PostgreSQL)', () => {
 
     expect(first).not.toBeNull();
     expect(redelivery).toBeNull();
-    if (!first) throw new Error('Inbox delivery did not process its operation.');
+    if (!first)
+      throw new Error('Inbox delivery did not process its operation.');
     expect(await walletBalance()).toBe(
       Money.from({ amount: balanceBefore, currency: 'BRL' })
         .subtract(Money.from({ amount: '10.00', currency: 'BRL' }))
@@ -221,19 +237,19 @@ describe('Wager idempotency (PostgreSQL)', () => {
     expect(inboxRows).toHaveLength(1);
     expect(inboxRows[0].payload_hash).toBe(inboxMessage.payloadHash);
     expect(inboxRows[0].processed_at).not.toBeNull();
-    const transactionEvents = await appOrm.em.getConnection().execute(
+    const transactionEvents = (await appOrm.em.getConnection().execute(
       `select event_type from "${schemaName}".outbox_messages
        where aggregate_id = ?`,
       [first.id],
-    ) as { event_type: string }[];
+    )) as { event_type: string }[];
     expect(transactionEvents.map(({ event_type }) => event_type)).toContain(
       'WagerTransactionProcessed',
     );
-    const walletEvents = await appOrm.em.getConnection().execute(
+    const walletEvents = (await appOrm.em.getConnection().execute(
       `select count(*)::int as count from "${schemaName}".outbox_messages
        where aggregate_id = ? and event_type = ?`,
       [walletId, 'WalletBalanceChanged'],
-    ) as { count: number }[];
+    )) as { count: number }[];
     expect(walletEvents[0].count).toBeGreaterThan(0);
 
     await expect(

@@ -178,7 +178,7 @@ também está configurada para os consumidores da fila de eventos.
 
 ## Migrations
 
-`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–005 criam a estrutura inicial, protegem reversões no ledger, alinham o versionamento da wallet, persistem o saldo original do replay e adicionam o agendamento de retries de referências.
+`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–008 criam e evoluem wallets, transações, ledger, inbox e outbox; protegem reversões, replay, retries de referências e imutabilidade do ledger; alinham a versão inicial da wallet em 1; e validam saldo/ledger por constraint trigger adiado no commit.
 
 ## Testes e compilação
 
@@ -189,14 +189,7 @@ bun run build
 bun run test
 ```
 
-Os testes de integração usam PostgreSQL e validam mapeamentos e reidratação. Com o PostgreSQL do Compose saudável e as variáveis de `backend/.env` configuradas, aplique as migrations e execute:
-
-```powershell
-bun run db:migrate
-bun run test:e2e
-```
-
-Os testes e2e usam PostgreSQL e LocalStack reais em containers; não substituem essas dependências por mocks. Copie os arquivos `.env.example` para `docker/.env` e `backend/.env`, configure os valores correspondentes e inicie os serviços conforme os passos acima. Em seguida, na pasta `backend/`, execute:
+Os testes e2e usam PostgreSQL e LocalStack reais em containers; não substituem essas dependências por mocks. Copie os arquivos `.env.example` para `docker/.env` e `backend/.env`, configure os valores correspondentes e inicie os serviços conforme os passos acima. Em seguida, na pasta `backend/`, aplique as migrations e execute:
 
 ```powershell
 bun run db:migrate
@@ -205,10 +198,13 @@ bun run test:e2e
 
 O comando e2e executa os arquivos em série para limitar o uso de memória. A suíte cria schemas PostgreSQL e filas FIFO únicas por execução, aplica e reverte migrations e remove somente os recursos de teste que criou. Indisponibilidade, configuração ausente ou falha nos serviços faz os testes falharem explicitamente. A cobertura inclui constraints e mapeamentos ORM, atomicidade financeira/inbox/outbox, consumo e publicação SQS reais, retries e redrive para DLQ, reinício/replay e reconstrução do saldo pelo ledger. Os testes de concorrência verificam 50 reenvios idempotentes, duas apostas de R$ 80,00 contra saldo de R$ 100,00, três consumers, recuperação após commit antes do ACK, dois publishers concorrentes e referências antecipadas de REFUND/ROLLBACK após reconexão.
 
+Na revisão final, foram registrados 38 testes e2e em 10 arquivos, 90 testes unitários em 14 arquivos, lint e build aprovados. O cenário de múltiplos consumidores executa três instâncias independentes de consumer e clientes de persistência/fila no mesmo processo de teste; não é um teste de três processos NestJS implantados separadamente. Execute novamente os comandos acima para validar o ambiente atual; essas evidências não são uma garantia de execução em outro ambiente.
+
 ## Documentação
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — decisões, limites e fluxos planejados da solução.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — decisões, trade-offs, evidências e limitações.
+- [GUIA.md](GUIA.md) — explicação acessível e roteiro de apresentação.
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints HTTP, o 14 resolve referências ausentes com backoff e expiração auditável na outbox, o 15 consome a fila SQS com inbox atômica, retries e DLQ, o 16 publica os eventos da outbox com ordenação por aggregate e retry durável, e o 17 compara o saldo da wallet ao ledger sem corrigir divergências. Autenticação continua fora do escopo atual.
+`Money` usa centavos `BigInt`; `Wallet` começa na versão 1 e protege moeda e saldo não negativo; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. O PostgreSQL serializa por chave idempotente e wallet e grava saldo, transação, ledger e outbox no mesmo commit. Constraints e triggers diferidos mantêm o saldo igual ao ledger em commits futuros; não corrigem divergências preexistentes, que precisam de reconciliação explícita. O consumidor SQS mantém inbox atômica, retries e DLQ; publishers usam leases e preservam ordenação por aggregate; a reconciliação compara saldo e ledger sem corrigir divergências. Autenticação de provedores não foi implementada. A outbox é at-least-once e seu envelope ainda não tem versão/correlação explícitas; consulte [ARCHITECTURE.md](ARCHITECTURE.md) para limites e trade-offs.

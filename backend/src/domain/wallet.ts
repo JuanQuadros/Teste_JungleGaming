@@ -61,9 +61,14 @@ export class Wallet {
     this.currentVersion = version;
   }
 
-  /** Abre uma wallet nova, com saldo zero e versão inicial zero. */
-  static open(id: string, playerId: string, currency: string): Wallet {
-    return new Wallet(id, playerId, currency, Money.zero(currency), 0);
+  /** Abre uma wallet na versão inicial exigida pelo contrato persistido. */
+  static open(
+    id: string,
+    playerId: string,
+    currency: string,
+    initialBalance = Money.zero(currency),
+  ): Wallet {
+    return new Wallet(id, playerId, currency, initialBalance, 1);
   }
 
   /** Restaura o estado persistido após validar seus invariantes de domínio. */
@@ -151,7 +156,7 @@ export class Wallet {
   private static assertVersion(version: number): void {
     if (
       !Number.isSafeInteger(version) ||
-      version < 0 ||
+      version < 1 ||
       version > MAX_WALLET_VERSION
     ) {
       throw new InvalidWalletError(

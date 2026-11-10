@@ -63,7 +63,7 @@ Valores entram e saem da API como strings decimais, por exemplo `"25.00"`. O `Mo
 
 `Money` é imutável, valida escala e código de moeda e rejeita valores negativos nos contratos de criação. Operações do domínio, como `negate` e `subtract`, podem produzir negativos sem alterar a instância original. A moeda permanece parte do modelo para validar incompatibilidades, mesmo que o escopo inicial use somente BRL.
 
-`Wallet` é o aggregate que associa identificador e jogador a uma moeda, saldo e versão. A abertura começa com saldo zero e versão zero; crédito e débito aceitam somente valores positivos da mesma moeda e avançam a versão uma vez por alteração aceita. Débito acima do saldo é rejeitado sem alterar estado. O banco usa `INTEGER` para a versão; a wallet valida o limite desse tipo e a migration 003 alinha a versão inicial zero ao schema.
+`Wallet` é o aggregate que associa identificador e jogador a uma moeda, saldo e versão. A abertura começa na versão 1, inclusive quando recebe saldo inicial; cada crédito ou débito posterior aceito avança a versão uma vez. Débito acima do saldo é rejeitado sem alterar estado. O banco usa `INTEGER` e exige `version >= 1`. A migration 006 corrige wallets versão zero criadas por uma decisão anterior e restaura a regra do desafio sem reescrever migrations já aplicadas.
 
 Entidades MikroORM guardam valores `NUMERIC(20, 2)` como strings decimais e mantêm UUIDs como identificadores escalares. Os repositórios convertem valores monetários para `Money` ao ler e de volta para strings ao persistir. Eles agendam mudanças no Unit of Work atual e não fazem `flush` ou `commit`; o caso de uso e a unidade de trabalho transacional coordenam a confirmação. O schema continua sendo alterado apenas pelo executor explícito de migrations.
 
@@ -73,7 +73,7 @@ O PostgreSQL é a autoridade final para concorrência e invariantes. A unidade d
 
 **Implementado nos marcos 10, 11 e 16:** `MikroOrmWalletTransactionUnitOfWork` abre uma transação SQL, serializa a mesma chave de idempotência com advisory lock e, para operação nova, bloqueia a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`). O hash SHA-256 é calculado sobre os campos de negócio. Chave e hash iguais retornam a transação persistida sem repetir efeitos; chave igual com hash diferente gera conflito. Para novas operações, saldo, transação, ledger e eventos de integração são gravados no mesmo Unit of Work. Erros técnicos revertem alterações; rejeições e pendências são persistidas sem movimento de saldo. Chaves e wallets diferentes podem avançar em paralelo.
 
-Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, exceto REFUND e ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. A reversão cria um novo lançamento oposto, sem alterar o original. A consistência entre o saldo materializado e a soma do ledger deve ser mantida por cada caso de uso transacional e conferida por reconciliação.
+Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. A migration 007 instala constraint triggers adiados até o commit, exigindo que cada alteração do saldo materializado corresponda à soma dos lançamentos da mesma moeda e que inserções no ledger também preservem essa igualdade. Ela não corrige dados antigos: uma divergência preexistente deve ser reconciliada antes de voltar a alterar aquela wallet, pois os triggers rejeitam commits inconsistentes. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, exceto REFUND e ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. A reversão cria um novo lançamento oposto, sem alterar o original. A reconciliação também confere o saldo materializado.
 
 ## Idempotência e identidade de transação
 
@@ -122,7 +122,7 @@ Autenticação não vale pontos no desafio e é opcional. A decisão atual é n�
 
 Migrations são versionadas, transacionais e reversíveis. O executor atual guarda versões em `schema_migrations` e usa advisory lock PostgreSQL para serializar execuções concorrentes.
 
-A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. Os marcos 10 e 11 usam repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente e assegurar replay idempotente. A inbox é usada pelo consumidor SQS para deduplicação atômica e a outbox do marco 16 publica eventos com leases persistidos sem exigir mudança de schema.
+A migration `001-initial-structure` cria wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` é mantida por compatibilidade histórica; `004` persiste o saldo original da resposta; `005` persiste o agendamento de retries de referência; `006-wallet-version-one` migra wallets zero para a versão inicial 1 e restaura default e constraint; `007` instala a invariável diferida de saldo/ledger para commits futuros; `008` também impede truncar o ledger, além de bloquear UPDATE/DELETE. Os repositórios gravam wallet, transação e ledger atomicamente; a inbox deduplica entradas SQS na mesma transação; publishers usam leases persistidos.
 
 ## Observabilidade e testes
 
@@ -134,8 +134,12 @@ Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntr
 
 ## Decisões ainda revisáveis
 
-- Limite de tentativas e TTL para referências pendentes.
-- Taxonomia completa de failure codes e mapeamento de status HTTP.
-- Política de retry/backoff para consumidores e publishers.
-- Integração do versionamento da wallet com a gravação concorrente no PostgreSQL.
-- Autenticação externa, caso seja implementada.
+- Autenticação de provedores não foi implementada, conforme permitido pelo desafio; seria integrada via IdP externo e guard/porta de identidade.
+- O envelope da outbox é JSON com `eventId`, `aggregateId`, `eventType`, `occurredAt` e `payload`; ainda não há classes tipadas por evento nem campos explícitos de versão, correlação ou causação no envelope. Consumidores externos devem tratar esse formato como contrato ainda não versionado.
+- A publicação PostgreSQL/SQS é at-least-once, não exactly-once. Uma queda depois do envio e antes da marcação pode publicar duplicata; o consumidor deve deduplicar por `eventId`.
+- O LocalStack requer um token válido para a imagem configurada no Compose; os testes e2e dependem de PostgreSQL e LocalStack reais e falham quando essas dependências não estão disponíveis.
+- Wallets divergentes que já existiam antes da migration 007 não são corrigidas automaticamente; cada uma precisa de reconciliação explícita antes de novas alterações financeiras. A suíte e2e executa em schemas isolados e não corrige dados do banco de desenvolvimento.
+
+## Evidência de validação
+
+Na revisão final, a suíte PostgreSQL/LocalStack executou **38 testes em 10 arquivos**, a suíte unitária executou **90 testes em 14 arquivos**, e lint e build passaram. A cobertura inclui o cenário de duas apostas concorrentes de `80.00 BRL` contra saldo `100.00 BRL`, 50 reenvios paralelos, três consumers com clientes independentes no mesmo processo de teste, crash depois do commit antes do ACK, dois publishers e REFUND/ROLLBACK antes da referência. A topologia real multi-processo não foi exercitada por este teste. Essas contagens descrevem a execução registrada no repositório, não garantem disponibilidade ou desempenho de produção.
