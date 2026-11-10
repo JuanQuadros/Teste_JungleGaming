@@ -40,16 +40,16 @@ Entidades MikroORM guardam valores `NUMERIC(20, 2)` como strings decimais e mant
 
 O PostgreSQL é a autoridade final para concorrência e invariantes. A unidade de serialização é `walletId`; não haverá lock global.
 
-**Implementado no marco 10:** `MikroOrmWalletTransactionUnitOfWork` abre uma transação SQL e bloqueia a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`). O caso de uso valida saldo e referências e grava transação, ledger e saldo/versionamento no mesmo Unit of Work. Qualquer erro técnico reverte todas as alterações; operações de negócio rejeitadas ou pendentes são registradas sem movimento de saldo. Wallets diferentes continuam podendo avançar em paralelo. Idempotência e outbox serão acrescentadas nos marcos 11 e 16.
+**Implementado nos marcos 10 e 11:** `MikroOrmWalletTransactionUnitOfWork` abre uma transação SQL, serializa a mesma chave de idempotência com advisory lock e, para operação nova, bloqueia a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`). O hash SHA-256 é calculado sobre os campos de negócio. Chave e hash iguais retornam a transação persistida sem repetir efeitos; chave igual com hash diferente gera conflito. Para novas operações, saldo, transação e ledger são gravados no mesmo Unit of Work. Erros técnicos revertem alterações; rejeições e pendências são persistidas sem movimento de saldo. Chaves e wallets diferentes podem avançar em paralelo. A outbox será conectada no marco 16.
 
 Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, exceto REFUND e ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. A reversão cria um novo lançamento oposto, sem alterar o original. A consistência entre o saldo materializado e a soma do ledger deve ser mantida por cada caso de uso transacional e conferida por reconciliação.
 
 ## Idempotência e identidade de transação
 
-O header `Idempotency-Key` é a fonte da verdade e deve ter unicidade persistente no banco. O hash será SHA-256 de uma representação JSON canônica dos campos de negócio, com chaves ordenadas; metadados de transporte não participam do hash.
+O header `Idempotency-Key` é a fonte da verdade e tem unicidade persistente no banco. A aplicação calcula SHA-256 sobre campos de negócio em ordem fixa; metadados de transporte, ID interno e o próprio hash não participam do cálculo. Um advisory lock PostgreSQL por chave serializa chamadas concorrentes antes da consulta ao registro existente. A operação nova grava transação, saldo e ledger dentro da mesma transação SQL.
 
-- Mesma chave e mesmo hash: retornar a resposta original como replay.
-- Mesma chave e hash diferente: responder conflito, sem alterar saldo.
+- Mesma chave e mesmo hash: retornar a transação persistida como replay, sem repetir efeitos.
+- Mesma chave e hash diferente: lançar conflito estável, sem alterar saldo.
 - Identidade externa: unicidade por `(providerId, externalTransactionId)`.
 
 Chaves em memória e deduplicação do broker são apenas otimizações, nunca garantias.
@@ -84,7 +84,7 @@ Autenticação não vale pontos no desafio e é opcional. A decisão atual é n�
 
 Migrations são versionadas, transacionais e reversíveis. O executor atual guarda versões em `schema_migrations` e usa advisory lock PostgreSQL para serializar execuções concorrentes.
 
-A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. O marco 10 usa os repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente. A integração com idempotência e outbox continua pendente.
+A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. Os marcos 10 e 11 usam repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente e assegurar replay idempotente. A integração com a outbox continua pendente.
 
 ## Observabilidade e testes
 

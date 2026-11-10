@@ -1,6 +1,6 @@
 # Jungle Gaming — Processador Distribuído de Apostas
 
-Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura está preparada; os componentes de domínio e os repositórios MikroORM estão implementados; e o processamento financeiro já usa uma transação SQL com lock por wallet. API, idempotência e workers ainda estão pendentes.
+Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura, domínio e repositórios MikroORM estão preparados; o processamento financeiro ocorre em transação SQL com lock por wallet e idempotência persistente. API e workers ainda estão pendentes.
 
 ## Tecnologias
 
@@ -117,4 +117,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados e falhas; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. O marco 10 processa BET, WIN, LOSS, REFUND e ROLLBACK sob lock exclusivo da wallet, gravando saldo, transação e ledger juntos. A validação e o mapeamento de erros da API estão preparados, mas aguardam integração aos endpoints. Idempotência operacional, outbox e processamento SQS ainda serão conectados aos casos de uso.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados e falhas; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam BET, WIN, LOSS, REFUND e ROLLBACK em transação SQL, com lock por wallet, hash SHA-256 do payload de negócio, replay para repetição idêntica e conflito para reutilização da chave com dados diferentes. A validação e o mapeamento de erros da API aguardam integração aos endpoints. Outbox e processamento SQS ainda serão conectados aos casos de uso.

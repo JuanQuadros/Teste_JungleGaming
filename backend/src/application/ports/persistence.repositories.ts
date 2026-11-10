@@ -54,16 +54,18 @@ export interface WalletLedgerEntryRepositoryPort {
 
 /** Repositórios e wallet carregados dentro da mesma transação SQL. */
 export interface WalletTransactionContext {
-  wallet: Wallet;
+  wallet: Wallet | null;
   wallets: WalletRepositoryPort;
   transactions: WagerTransactionRepositoryPort;
   ledgerEntries: WalletLedgerEntryRepositoryPort;
+  existingIdempotentTransaction: WagerTransaction | null;
 }
 
-/** Executa o callback após adquirir lock exclusivo da wallet no PostgreSQL. */
+/** Serializa a chave de idempotência e, para novas operações, bloqueia a wallet. */
 export interface WalletTransactionUnitOfWorkPort {
-  withLockedWallet<T>(
+  withIdempotencyAndWalletLock<T>(
     walletId: string,
+    idempotencyKey: string,
     operation: (context: WalletTransactionContext) => Promise<T>,
   ): Promise<T>;
 }

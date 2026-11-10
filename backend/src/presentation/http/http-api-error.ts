@@ -1,9 +1,5 @@
-export class IdempotencyConflictError extends Error {
-  constructor() {
-    super('A chave de idempotência já foi usada com outra solicitação.');
-    this.name = 'IdempotencyConflictError';
-  }
-}
+// Mantém o contrato de importação HTTP enquanto o erro pertence à camada de aplicação.
+export { IdempotencyConflictError } from '../../application/wager-processing/idempotency-conflict.error.js';
 
 export class TransientInfrastructureError extends Error {
   constructor() {

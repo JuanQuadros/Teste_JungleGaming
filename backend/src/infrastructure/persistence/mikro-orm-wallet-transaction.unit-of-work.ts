@@ -13,27 +13,58 @@ import {
 } from './repositories/index.js';
 import { PersistenceRecordNotFoundError } from './repositories/persistence-record-not-found.error.js';
 
-/** Abre uma transação SQL, bloqueia uma wallet e compartilha o mesmo EntityManager. */
+/** Abre a transação e serializa por chave antes de bloquear a wallet. */
 @Injectable()
 export class MikroOrmWalletTransactionUnitOfWork implements WalletTransactionUnitOfWorkPort {
   constructor(private readonly entityManager: EntityManager) {}
 
-  /** O lock é liberado pelo PostgreSQL somente quando o callback confirma ou reverte. */
-  withLockedWallet<T>(
+  /** Locks transacionais evitam corrida entre instâncias e liberam no commit/rollback. */
+  withIdempotencyAndWalletLock<T>(
     walletId: string,
+    idempotencyKey: string,
     operation: (context: WalletTransactionContext) => Promise<T>,
   ): Promise<T> {
     return this.entityManager.transactional(
       async (transactionalEntityManager) => {
+        // A trava é por chave, portanto operações independentes não se bloqueiam entre si.
+        await transactionalEntityManager
+          .getConnection()
+          .execute(
+            'select pg_advisory_xact_lock(hashtextextended(?, 0))',
+            [idempotencyKey],
+            'all',
+            transactionalEntityManager.getTransactionContext(),
+          );
+
+        const wallets = new MikroOrmWalletRepository(
+          transactionalEntityManager,
+        );
+        const transactions = new MikroOrmWagerTransactionRepository(
+          transactionalEntityManager,
+        );
+        const ledgerEntries = new MikroOrmWalletLedgerEntryRepository(
+          transactionalEntityManager,
+        );
+        const existingIdempotentTransaction =
+          await transactions.findByIdempotencyKey(idempotencyKey);
+
+        // Replay ou conflito são resolvidos antes de buscar e bloquear a wallet.
+        if (existingIdempotentTransaction) {
+          return operation({
+            wallet: null,
+            wallets,
+            transactions,
+            ledgerEntries,
+            existingIdempotentTransaction,
+          });
+        }
+
         await transactionalEntityManager.findOne(
           WalletEntity,
           { id: walletId },
           { lockMode: LockMode.PESSIMISTIC_WRITE },
         );
 
-        const wallets = new MikroOrmWalletRepository(
-          transactionalEntityManager,
-        );
         const wallet = await wallets.findById(walletId);
         if (!wallet) {
           throw new PersistenceRecordNotFoundError('wallet', walletId);
@@ -42,12 +73,9 @@ export class MikroOrmWalletTransactionUnitOfWork implements WalletTransactionUni
         return operation({
           wallet,
           wallets,
-          transactions: new MikroOrmWagerTransactionRepository(
-            transactionalEntityManager,
-          ),
-          ledgerEntries: new MikroOrmWalletLedgerEntryRepository(
-            transactionalEntityManager,
-          ),
+          transactions,
+          ledgerEntries,
+          existingIdempotentTransaction: null,
         });
       },
     );

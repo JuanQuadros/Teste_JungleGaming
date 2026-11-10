@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Money } from '../../domain/money.js';
 import {
   DuplicateLedgerReversalError,
@@ -21,6 +21,7 @@ import {
   type WalletTransactionContext,
   type WalletTransactionUnitOfWorkPort,
 } from '../ports/persistence.repositories.js';
+import { IdempotencyConflictError } from './idempotency-conflict.error.js';
 
 /** Processa uma operação financeira isolada sob transação e lock da wallet. */
 @Injectable()
@@ -31,19 +32,58 @@ export class ProcessWagerTransactionUseCase {
   ) {}
 
   /**
-   * Persiste transação, saldo e ledger juntos; a entrada original fica intacta em caso de falha.
-   * Idempotência e publicação de eventos serão integradas nos marcos correspondentes.
+   * Persiste a operação uma vez; reenvios iguais retornam o registro já salvo.
    */
   async execute(input: WagerTransaction): Promise<WagerTransaction> {
-    const snapshot = input.toSnapshot();
-    if (snapshot.status !== WagerTransactionStatus.PENDING) {
+    const original = input.toSnapshot();
+    if (original.status !== WagerTransactionStatus.PENDING) {
       throw new Error('Somente uma transação PENDING pode ser processada.');
     }
+    // A API calcula o hash dos campos de negócio para não confiar em hash recebido.
+    const snapshot = {
+      ...original,
+      payloadHash: this.hashBusinessPayload(original),
+    };
 
-    return this.unitOfWork.withLockedWallet(
+    return this.unitOfWork.withIdempotencyAndWalletLock(
       snapshot.walletId,
-      async (context) => this.processInsideTransaction(snapshot, context),
+      snapshot.idempotencyKey,
+      async (context) => {
+        const existing = context.existingIdempotentTransaction;
+        if (existing) {
+          if (existing.payloadHash !== snapshot.payloadHash) {
+            throw new IdempotencyConflictError();
+          }
+          return existing;
+        }
+        if (!context.wallet) {
+          throw new Error('Wallet ausente após adquirir o lock transacional.');
+        }
+        return this.processInsideTransaction(snapshot, {
+          ...context,
+          wallet: context.wallet,
+        });
+      },
     );
+  }
+
+  /** Gera SHA-256 determinístico somente com campos que alteram o significado financeiro. */
+  private hashBusinessPayload(snapshot: WagerTransactionSnapshot): string {
+    const payload = {
+      amount: snapshot.amount.toJSON().amount,
+      currency: snapshot.currency,
+      externalTransactionId: snapshot.externalTransactionId,
+      gameId: snapshot.gameId,
+      kind: snapshot.kind,
+      playerId: snapshot.playerId,
+      providerId: snapshot.providerId,
+      referenceExternalTransactionId:
+        snapshot.referenceExternalTransactionId ?? null,
+      referenceTransactionId: snapshot.referenceTransactionId ?? null,
+      roundId: snapshot.roundId,
+      walletId: snapshot.walletId,
+    };
+    return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   }
 
   /** Executa as regras após adquirir o lock e usando apenas dados da mesma transação SQL. */
@@ -52,6 +92,9 @@ export class ProcessWagerTransactionUseCase {
     context: WalletTransactionContext,
   ): Promise<WagerTransaction> {
     const { wallet, wallets, transactions, ledgerEntries } = context;
+    if (!wallet) {
+      throw new Error('Wallet ausente no processamento de uma nova operação.');
+    }
     if (
       wallet.playerId !== snapshot.playerId ||
       wallet.currency !== snapshot.currency
