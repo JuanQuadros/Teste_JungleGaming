@@ -196,7 +196,14 @@ bun run db:migrate
 bun run test:e2e
 ```
 
-Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam idempotência, API HTTP, inbox atômica e referências fora de ordem: chegada tardia e resolução, esgotamento das cinco tentativas, evento de expiração único e ausência de lançamentos duplicados. Testes unitários cobrem validação de mensagens, ACK após o processamento, retry sem ACK e shutdown do consumidor.
+Os testes e2e usam PostgreSQL e LocalStack reais em containers; não substituem essas dependências por mocks. Copie os arquivos `.env.example` para `docker/.env` e `backend/.env`, configure os valores correspondentes e inicie os serviços conforme os passos acima. Em seguida, na pasta `backend/`, execute:
+
+```powershell
+bun run db:migrate
+bun run test:e2e
+```
+
+O comando e2e executa os arquivos em série para limitar o uso de memória. A suíte cria schemas PostgreSQL e filas FIFO únicas por execução, aplica e reverte migrations e remove somente os recursos de teste que criou. Indisponibilidade, configuração ausente ou falha nos serviços faz os testes falharem explicitamente. A cobertura inclui constraints e mapeamentos ORM, atomicidade financeira/inbox/outbox, consumo e publicação SQS reais, retries e redrive para DLQ, reinício/replay e reconstrução do saldo pelo ledger.
 
 ## Documentação
 

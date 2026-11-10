@@ -1,0 +1,49 @@
+import {
+  down as initialDown,
+  name as initialName,
+  up as initialUp,
+} from './001-initial-structure.js';
+import {
+  down as ledgerReversalsDown,
+  name as ledgerReversalsName,
+  up as ledgerReversalsUp,
+} from './002-ledger-reversals.js';
+import {
+  down as walletVersionZeroDown,
+  name as walletVersionZeroName,
+  up as walletVersionZeroUp,
+} from './003-wallet-version-zero.js';
+import {
+  down as idempotencyResponseBalanceDown,
+  name as idempotencyResponseBalanceName,
+  up as idempotencyResponseBalanceUp,
+} from './004-idempotency-response-balance.js';
+import {
+  down as pendingReferenceRetriesDown,
+  name as pendingReferenceRetriesName,
+  up as pendingReferenceRetriesUp,
+} from './005-pending-reference-retries.js';
+
+export const migrations = [
+  { name: initialName, up: initialUp, down: initialDown },
+  {
+    name: ledgerReversalsName,
+    up: ledgerReversalsUp,
+    down: ledgerReversalsDown,
+  },
+  {
+    name: walletVersionZeroName,
+    up: walletVersionZeroUp,
+    down: walletVersionZeroDown,
+  },
+  {
+    name: idempotencyResponseBalanceName,
+    up: idempotencyResponseBalanceUp,
+    down: idempotencyResponseBalanceDown,
+  },
+  {
+    name: pendingReferenceRetriesName,
+    up: pendingReferenceRetriesUp,
+    down: pendingReferenceRetriesDown,
+  },
+];
