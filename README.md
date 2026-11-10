@@ -101,7 +101,9 @@ Erros HTTP usam `{ error: { code, message, details? }, correlationId? }`, com
 códigos estáveis: 400 `INVALID_REQUEST`, 404 `NOT_FOUND`, 409
 `IDEMPOTENCY_CONFLICT` ou `WALLET_ALREADY_EXISTS`, 422 para rejeições de negócio,
 202 `PROCESSING_PENDING`, 500 `PROCESSING_FAILED` terminal e 503
-`SERVICE_UNAVAILABLE` transitório.
+`SERVICE_UNAVAILABLE` transitório. Uma rejeição de negócio inclui o código
+específico, por exemplo `INSUFFICIENT_BALANCE`; o replay conserva status, código
+e saldo observados no processamento original.
 
 ## Migrations
 
@@ -123,7 +125,7 @@ bun run db:migrate
 bun run test:e2e
 ```
 
-Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam a idempotência e os endpoints HTTP, incluindo abertura de wallet e ledger atômicos, replays, consultas e paginação por cursor.
+Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam idempotência e endpoints HTTP, incluindo payload/header inválidos, respostas de conflito e rejeição, processamento pendente, replay, abertura de wallet e ledger atômicos, consultas e paginação por cursor.
 
 ## Documentação
 
