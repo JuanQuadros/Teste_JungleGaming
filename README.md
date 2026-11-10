@@ -1,6 +1,6 @@
 # Jungle Gaming — Processador Distribuído de Apostas
 
-Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura está preparada e os componentes de domínio `Money`, `Wallet` e `WagerTransaction` já foram implementados. Os fluxos financeiros ainda não foram implementados.
+Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura está preparada; os componentes de domínio `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` existem; e as entidades e repositórios MikroORM foram mapeados. Os casos de uso financeiros ainda não foram implementados.
 
 ## Tecnologias
 
@@ -78,7 +78,7 @@ latência e verificações de dependências do readiness.
 
 ## Migrations
 
-`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. A migration inicial cria a estrutura base de wallets, transações, ledger, inbox e outbox; ela ainda não implementa as regras financeiras.
+`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–003 criam a estrutura inicial, protegem reversões no ledger e alinham o versionamento da wallet.
 
 ## Testes e compilação
 
@@ -98,4 +98,4 @@ Os testes de integração exigidos pelo desafio ainda serão adicionados quando 
 
 ## Estado atual
 
-`Money` representa valores com centavos `BigInt`; `Wallet` protege moeda, saldo não negativo e versão; `WagerTransaction` controla estados explícitos e códigos estáveis de falha; `WalletLedgerEntry` registra movimentos imutáveis e valida as regras de reversão. A migration 002 vincula cada reversão a um lançamento da mesma wallet e impede mais de uma reversão por lançamento original. A observabilidade base registra requisições HTTP e verificações de dependências. Métricas de transações, duplicatas, retries, DLQ, conflitos de lock e outbox serão conectadas quando esses fluxos forem implementados. Os casos de uso financeiros, a persistência transacional integrada, a idempotência e o processamento assíncrono ainda não foram implementados.
+`Money` representa valores com centavos `BigInt`; `Wallet` protege moeda, saldo não negativo e versão; `WagerTransaction` controla estados explícitos e códigos estáveis de falha; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Entidades MikroORM mapeiam wallets, apostas, ledger, inbox e outbox. Repositórios convertem os três aggregates financeiros e deixam o flush/commit para os casos de uso. A migration 003 alinha o versionamento da wallet. Idempotência operacional, transações financeiras integradas e processamento assíncrono ainda não foram implementados.

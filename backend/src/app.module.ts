@@ -10,6 +10,7 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { mikroOrmConfig } from './mikro-orm.config.js';
 import { HealthController } from './health.controller.js';
 import { SQSClient } from '@aws-sdk/client-sqs';
+import { PersistenceModule } from './infrastructure/persistence/persistence.module.js';
 import { HttpObservabilityMiddleware } from './observability/http-observability.middleware.js';
 import { MetricsController } from './observability/metrics.controller.js';
 import { MetricsService } from './observability/metrics.service.js';
@@ -35,7 +36,7 @@ const sqsClientProvider = {
 
 @Module({
   // Registra uma conexão compartilhada com o banco para injeção nos provedores do NestJS.
-  imports: [MikroOrmModule.forRoot(mikroOrmConfig)],
+  imports: [MikroOrmModule.forRoot(mikroOrmConfig), PersistenceModule],
   controllers: [AppController, HealthController, MetricsController],
   providers: [
     AppService,

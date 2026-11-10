@@ -1,5 +1,8 @@
 import { Money } from './money.js';
 
+// O banco usa INTEGER para versionamento, cujo limite positivo é menor que o de Number seguro.
+const MAX_WALLET_VERSION = 2_147_483_647;
+
 /** Dados necessários para restaurar uma wallet persistida. */
 export interface WalletSnapshot {
   id: string;
@@ -121,7 +124,10 @@ export class Wallet {
 
   /** Impede uma mutação quando a versão atingiria um inteiro não seguro. */
   private advanceVersion(): void {
-    if (!Number.isSafeInteger(this.currentVersion + 1)) {
+    if (
+      !Number.isSafeInteger(this.currentVersion + 1) ||
+      this.currentVersion + 1 > MAX_WALLET_VERSION
+    ) {
       throw new InvalidWalletError(
         'A versão da wallet excedeu o limite suportado.',
       );
@@ -143,7 +149,11 @@ export class Wallet {
 
   /** Aceita apenas versões inteiras não negativas que possam ser representadas com segurança. */
   private static assertVersion(version: number): void {
-    if (!Number.isSafeInteger(version) || version < 0) {
+    if (
+      !Number.isSafeInteger(version) ||
+      version < 0 ||
+      version > MAX_WALLET_VERSION
+    ) {
       throw new InvalidWalletError(
         'A versão da wallet deve ser um inteiro não negativo seguro.',
       );

@@ -10,11 +10,25 @@ import {
   name as ledgerReversalsName,
   up as ledgerReversalsUp,
 } from './002-ledger-reversals.js';
+import {
+  down as walletVersionZeroDown,
+  name as walletVersionZeroName,
+  up as walletVersionZeroUp,
+} from './003-wallet-version-zero.js';
 
 const migrationLock = 741_904_202;
 const migrations = [
   { name: initialName, up: initialUp, down: initialDown },
-  { name: ledgerReversalsName, up: ledgerReversalsUp, down: ledgerReversalsDown },
+  {
+    name: ledgerReversalsName,
+    up: ledgerReversalsUp,
+    down: ledgerReversalsDown,
+  },
+  {
+    name: walletVersionZeroName,
+    up: walletVersionZeroUp,
+    down: walletVersionZeroDown,
+  },
 ];
 
 // Executa uma migration versionada por vez e mantém o SQL e o registro na mesma transação.

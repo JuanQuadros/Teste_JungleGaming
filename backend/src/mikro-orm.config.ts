@@ -1,4 +1,13 @@
+import 'reflect-metadata';
 import { defineConfig } from '@mikro-orm/postgresql';
+import { ReflectMetadataProvider } from '@mikro-orm/decorators/legacy';
+import {
+  InboxMessageEntity,
+  OutboxMessageEntity,
+  WalletEntity,
+  WalletLedgerEntryEntity,
+  WagerTransactionEntity,
+} from './infrastructure/persistence/entities/index.js';
 
 // Interrompe a inicialização com uma mensagem clara se faltar uma variável obrigatória.
 const required = (name: string): string => {
@@ -16,7 +25,13 @@ export const mikroOrmConfig = defineConfig({
   dbName: required('POSTGRES_DB'),
   user: required('POSTGRES_USER'),
   password: required('POSTGRES_PASSWORD'),
-  entities: [],
-  // Até a criação das entidades de domínio, o schema é gerenciado pelo executor explícito de migrations.
-  discovery: { warnWhenNoEntities: false },
+  // Migrations explícitas continuam sendo a única forma de alterar o schema do banco.
+  entities: [
+    WalletEntity,
+    WagerTransactionEntity,
+    WalletLedgerEntryEntity,
+    InboxMessageEntity,
+    OutboxMessageEntity,
+  ],
+  metadataProvider: ReflectMetadataProvider,
 });
