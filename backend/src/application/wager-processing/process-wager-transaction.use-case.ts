@@ -103,6 +103,7 @@ export class ProcessWagerTransactionUseCase {
         snapshot,
         transactions,
         WagerRejectionCode.INVALID_REFERENCE,
+        wallet.balance,
       );
     }
 
@@ -122,6 +123,7 @@ export class ProcessWagerTransactionUseCase {
               snapshot,
               transactions,
               WagerRejectionCode.INSUFFICIENT_BALANCE,
+              wallet.balance,
             );
           }
           throw error;
@@ -170,9 +172,10 @@ export class ProcessWagerTransactionUseCase {
       }
     }
 
-    transactions.insert(processed);
     if (balanceChanged) await wallets.update(wallet);
     if (entry) ledgerEntries.insert(entry);
+    processed.recordResponseBalance(wallet.balance);
+    transactions.insert(processed);
     return processed;
   }
 
@@ -193,6 +196,7 @@ export class ProcessWagerTransactionUseCase {
         snapshot,
         transactions,
         WagerRejectionCode.INVALID_REFERENCE,
+        balanceBefore,
       );
     }
 
@@ -205,6 +209,7 @@ export class ProcessWagerTransactionUseCase {
     if (!original) {
       const pending = WagerTransaction.rehydrate(snapshot);
       pending.markPendingReference();
+      pending.recordResponseBalance(balanceBefore);
       transactions.insert(pending);
       return pending;
     }
@@ -215,6 +220,7 @@ export class ProcessWagerTransactionUseCase {
         snapshot,
         transactions,
         WagerRejectionCode.INVALID_REFERENCE,
+        balanceBefore,
       );
     }
 
@@ -232,7 +238,7 @@ export class ProcessWagerTransactionUseCase {
       });
     } catch (error) {
       if (error instanceof RollbackWouldCauseNegativeBalanceError) {
-        return this.reject(snapshot, transactions, error.code);
+        return this.reject(snapshot, transactions, error.code, balanceBefore);
       }
       if (
         error instanceof InvalidWalletLedgerEntryError ||
@@ -242,6 +248,7 @@ export class ProcessWagerTransactionUseCase {
           snapshot,
           transactions,
           WagerRejectionCode.INVALID_REFERENCE,
+          balanceBefore,
         );
       }
       throw error;
@@ -253,9 +260,11 @@ export class ProcessWagerTransactionUseCase {
     snapshot: WagerTransactionSnapshot,
     transactions: WalletTransactionContext['transactions'],
     code: (typeof WagerRejectionCode)[keyof typeof WagerRejectionCode],
+    responseBalance: Money,
   ): WagerTransaction {
     const rejected = WagerTransaction.rehydrate(snapshot);
     rejected.reject(code);
+    rejected.recordResponseBalance(responseBalance);
     transactions.insert(rejected);
     return rejected;
   }

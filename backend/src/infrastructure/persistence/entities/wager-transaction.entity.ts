@@ -62,6 +62,14 @@ export class WagerTransactionEntity {
   status!: string;
 
   @Property({
+    type: 'numeric',
+    fieldName: 'response_balance',
+    columnType: 'numeric(20, 2)',
+    nullable: true,
+  })
+  responseBalance: string | null = null;
+
+  @Property({
     type: 'text',
     fieldName: 'reference_external_transaction_id',
     nullable: true,

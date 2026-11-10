@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Money } from '../../domain/money.js';
 import { WagerTransactionStatus } from '../../domain/wager-transaction.js';
 import { mapWagerTransactionResponse } from './wager-transaction-response.js';
 
@@ -32,10 +33,16 @@ describe('mapWagerTransactionResponse', () => {
           id: 'transaction-1',
           status,
           failureCode,
+          responseBalance: Money.from({ amount: '12.34', currency: 'BRL' }),
         }),
       ).toEqual({
         statusCode,
-        body: { transactionId: 'transaction-1', status, code },
+        body: {
+          transactionId: 'transaction-1',
+          status,
+          code,
+          balance: '12.34',
+        },
       });
     },
   );

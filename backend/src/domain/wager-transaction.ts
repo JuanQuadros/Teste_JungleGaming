@@ -82,6 +82,7 @@ export type WagerTransactionInput = Omit<WagerTransactionData, 'kind'> & {
 export interface WagerTransactionSnapshot extends WagerTransactionData {
   status: WagerTransactionStatus;
   failureCode: WagerFailureCode | null;
+  responseBalance?: Money | null;
 }
 
 /** Erro lançado quando os dados de identidade ou negócio não podem criar uma transação. */
@@ -119,6 +120,7 @@ const TERMINAL_STATUSES = new Set<WagerTransactionStatus>([
 export class WagerTransaction {
   private currentStatus: WagerTransactionStatus;
   private currentFailureCode: WagerFailureCode | null;
+  private currentResponseBalance: Money | null;
 
   private constructor(
     public readonly id: string,
@@ -137,9 +139,11 @@ export class WagerTransaction {
     public readonly referenceTransactionId: string | null,
     status: WagerTransactionStatus,
     failureCode: WagerFailureCode | null,
+    responseBalance: Money | null,
   ) {
     this.currentStatus = status;
     this.currentFailureCode = failureCode;
+    this.currentResponseBalance = responseBalance;
   }
 
   /** Cria uma operação recebida de provedor no estado inicial PENDING. */
@@ -168,6 +172,10 @@ export class WagerTransaction {
       snapshot.status,
       snapshot.failureCode,
     );
+    WagerTransaction.assertResponseBalance(
+      snapshot.responseBalance ?? null,
+      snapshot.currency,
+    );
 
     return new WagerTransaction(
       snapshot.id,
@@ -186,6 +194,7 @@ export class WagerTransaction {
       snapshot.referenceTransactionId ?? null,
       snapshot.status,
       snapshot.failureCode,
+      snapshot.responseBalance ?? null,
     );
   }
 
@@ -197,6 +206,28 @@ export class WagerTransaction {
   /** Retorna o código estável associado a uma rejeição ou falha técnica. */
   get failureCode(): WagerFailureCode | null {
     return this.currentFailureCode;
+  }
+
+  /** Retorna o saldo capturado para compor a resposta original de idempotência. */
+  get responseBalance(): Money | null {
+    return this.currentResponseBalance;
+  }
+
+  /** Registra uma única vez o saldo observado durante o processamento da solicitação. */
+  recordResponseBalance(balance: Money): void {
+    if (
+      this.currentResponseBalance !== null ||
+      (this.currentStatus !== WagerTransactionStatus.PROCESSED &&
+        this.currentStatus !== WagerTransactionStatus.REJECTED &&
+        this.currentStatus !== WagerTransactionStatus.PENDING_REFERENCE)
+    ) {
+      throw new InvalidWagerTransitionError(
+        this.currentStatus,
+        this.currentStatus,
+      );
+    }
+    WagerTransaction.assertResponseBalance(balance, this.currency);
+    this.currentResponseBalance = balance;
   }
 
   /** Marca uma operação aguardando a chegada de sua transação de referência. */
@@ -273,6 +304,9 @@ export class WagerTransaction {
       referenceTransactionId: this.referenceTransactionId,
       status: this.currentStatus,
       failureCode: this.currentFailureCode,
+      ...(this.currentResponseBalance
+        ? { responseBalance: this.currentResponseBalance }
+        : {}),
     };
   }
 
@@ -299,6 +333,7 @@ export class WagerTransaction {
       input.referenceExternalTransactionId ?? null,
       input.referenceTransactionId ?? null,
       WagerTransactionStatus.PENDING,
+      null,
       null,
     );
   }
@@ -374,6 +409,23 @@ export class WagerTransaction {
     if (!validCombination) {
       throw new InvalidWagerTransactionError(
         'O estado e o código de falha da transação são incompatíveis.',
+      );
+    }
+  }
+
+  /** Valida o saldo persistido da resposta sem permitir valor negativo ou moeda divergente. */
+  private static assertResponseBalance(
+    balance: Money | null,
+    currency: string,
+  ): void {
+    if (
+      balance !== null &&
+      (!(balance instanceof Money) ||
+        balance.currency !== currency ||
+        balance.isNegative())
+    ) {
+      throw new InvalidWagerTransactionError(
+        'O saldo da resposta deve ser não negativo e usar a moeda da transação.',
       );
     }
   }

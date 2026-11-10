@@ -1,9 +1,11 @@
 import { WagerTransactionStatus } from '../../domain/wager-transaction.js';
+import type { Money } from '../../domain/money.js';
 
 export interface WagerTransactionResult {
   id: string;
   status: WagerTransactionStatus;
   failureCode: string | null;
+  responseBalance: Money | null;
 }
 
 export interface WagerTransactionHttpResponse {
@@ -12,6 +14,7 @@ export interface WagerTransactionHttpResponse {
     transactionId: string;
     status: WagerTransactionStatus;
     code: string;
+    balance: string | null;
   };
 }
 
@@ -27,6 +30,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: 'PROCESSED',
+          balance: transaction.responseBalance?.toJSON().amount ?? null,
         },
       };
     case WagerTransactionStatus.PENDING:
@@ -37,6 +41,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: 'PROCESSING_PENDING',
+          balance: transaction.responseBalance?.toJSON().amount ?? null,
         },
       };
     case WagerTransactionStatus.REJECTED:
@@ -46,6 +51,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: transaction.failureCode ?? 'WAGER_REJECTED',
+          balance: transaction.responseBalance?.toJSON().amount ?? null,
         },
       };
     case WagerTransactionStatus.FAILED:
@@ -55,6 +61,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: 'PROCESSING_FAILED',
+          balance: transaction.responseBalance?.toJSON().amount ?? null,
         },
       };
   }

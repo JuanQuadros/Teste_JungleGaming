@@ -86,6 +86,13 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       referenceTransactionId: entity.referenceTransactionId,
       status: entity.status as WagerTransactionStatus,
       failureCode: entity.failureCode as WagerFailureCode | null,
+      responseBalance:
+        entity.responseBalance === null
+          ? null
+          : Money.from({
+              amount: entity.responseBalance,
+              currency: entity.currency,
+            }),
     };
     return WagerTransaction.rehydrate(snapshot);
   }
@@ -112,6 +119,8 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       referenceExternalTransactionId: snapshot.referenceExternalTransactionId,
       referenceTransactionId: snapshot.referenceTransactionId,
       failureCode: snapshot.failureCode,
+      responseBalance:
+        transaction.responseBalance?.toJSON().amount ?? null,
     };
   }
 }

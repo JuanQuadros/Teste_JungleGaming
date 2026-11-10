@@ -15,6 +15,11 @@ import {
   name as walletVersionZeroName,
   up as walletVersionZeroUp,
 } from './003-wallet-version-zero.js';
+import {
+  down as idempotencyResponseBalanceDown,
+  name as idempotencyResponseBalanceName,
+  up as idempotencyResponseBalanceUp,
+} from './004-idempotency-response-balance.js';
 
 const migrationLock = 741_904_202;
 const migrations = [
@@ -28,6 +33,11 @@ const migrations = [
     name: walletVersionZeroName,
     up: walletVersionZeroUp,
     down: walletVersionZeroDown,
+  },
+  {
+    name: idempotencyResponseBalanceName,
+    up: idempotencyResponseBalanceUp,
+    down: idempotencyResponseBalanceDown,
   },
 ];
 

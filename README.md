@@ -1,6 +1,6 @@
 # Jungle Gaming — Processador Distribuído de Apostas
 
-Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura, domínio e repositórios MikroORM estão preparados; o processamento financeiro ocorre em transação SQL com lock por wallet e idempotência persistente. API e workers ainda estão pendentes.
+Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura, domínio e repositórios MikroORM estão preparados; o processamento financeiro ocorre em transação SQL com lock por wallet e idempotência persistente. A API e os workers ainda aguardam integração.
 
 ## Tecnologias
 
@@ -91,7 +91,7 @@ está preparado para ser usado pelos endpoints de transação.
 
 ## Migrations
 
-`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–003 criam a estrutura inicial, protegem reversões no ledger e alinham o versionamento da wallet.
+`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–004 criam a estrutura inicial, protegem reversões no ledger, alinham o versionamento da wallet e persistem o saldo da resposta original para replay idempotente.
 
 ## Testes e compilação
 
@@ -109,7 +109,7 @@ bun run db:migrate
 bun run test:e2e
 ```
 
-Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes de concorrência, atomicidade financeira e recuperação distribuída ainda serão adicionados nos marcos correspondentes.
+Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. A idempotência é validada com PostgreSQL real para chamadas concorrentes e sequenciais, replay do saldo original após operações posteriores e reinicialização, conflito de payload sem efeitos financeiros adicionais.
 
 ## Documentação
 
@@ -117,4 +117,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados e falhas; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam BET, WIN, LOSS, REFUND e ROLLBACK em transação SQL, com lock por wallet, hash SHA-256 do payload de negócio, replay para repetição idêntica e conflito para reutilização da chave com dados diferentes. A validação e o mapeamento de erros da API aguardam integração aos endpoints. Outbox e processamento SQS ainda serão conectados aos casos de uso.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas e o saldo registrado na resposta original; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam BET, WIN, LOSS, REFUND e ROLLBACK em transação SQL, com lock por wallet, hash SHA-256 do payload de negócio, replay idêntico que preserva a resposta financeira original e conflito para reutilização da chave com dados diferentes. A validação e o mapeamento de erros da API aguardam integração aos endpoints. Outbox e processamento SQS ainda serão conectados aos casos de uso.
