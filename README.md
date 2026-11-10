@@ -91,4 +91,4 @@ Os testes de integração exigidos pelo desafio ainda serão adicionados quando 
 
 ## Estado atual
 
-`Money` representa valores com centavos `BigInt`; `Wallet` protege moeda, saldo não negativo e versão; `WagerTransaction` controla estados explícitos e códigos estáveis de falha. Os testes unitários cobrem esses invariantes. O ledger, a persistência financeira, a idempotência e o processamento assíncrono ainda não foram implementados.
+`Money` representa valores com centavos `BigInt`; `Wallet` protege moeda, saldo não negativo e versão; `WagerTransaction` controla estados explícitos e códigos estáveis de falha; `WalletLedgerEntry` registra movimentos imutáveis e valida as regras de reversão. A migration 002 vincula cada reversão a um lançamento da mesma wallet e impede mais de uma reversão por lançamento original. Os casos de uso financeiros, a persistência transacional integrada, a idempotência e o processamento assíncrono ainda não foram implementados.

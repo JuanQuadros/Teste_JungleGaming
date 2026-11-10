@@ -1,8 +1,21 @@
 import { MikroORM } from '@mikro-orm/postgresql';
 import { mikroOrmConfig } from '../mikro-orm.config.js';
-import { down, name, up } from './001-initial-structure.js';
+import {
+  down as initialDown,
+  name as initialName,
+  up as initialUp,
+} from './001-initial-structure.js';
+import {
+  down as ledgerReversalsDown,
+  name as ledgerReversalsName,
+  up as ledgerReversalsUp,
+} from './002-ledger-reversals.js';
 
 const migrationLock = 741_904_202;
+const migrations = [
+  { name: initialName, up: initialUp, down: initialDown },
+  { name: ledgerReversalsName, up: ledgerReversalsUp, down: ledgerReversalsDown },
+];
 
 // Executa uma migration versionada por vez e mantém o SQL e o registro na mesma transação.
 async function run(direction: 'up' | 'down') {
@@ -24,23 +37,37 @@ async function run(direction: 'up' | 'down') {
         )
       `);
 
-      // O registro permite repetir a execução sem reaplicar uma migration já concluída.
-      const result = await execute(
-        'select name from schema_migrations where name = ?',
-        [name],
-      );
-      const rows = result as unknown as { name: string }[];
-      const applied = rows.length > 0;
+      if (direction === 'up') {
+        for (const migration of migrations) {
+          const result = await execute(
+            'select name from schema_migrations where name = ?',
+            [migration.name],
+          );
+          const rows = result as unknown as { name: string }[];
+          if (rows.length > 0) continue;
 
-      if (direction === 'up' && !applied) {
-        for (const statement of up) await execute(statement);
-        await execute('insert into schema_migrations (name) values (?)', [name]);
-        console.info(`Applied ${name}`);
-      } else if (direction === 'down' && applied) {
-        for (const statement of down) await execute(statement);
-        await execute('delete from schema_migrations where name = ?', [name]);
-        console.info(`Reverted ${name}`);
+          for (const statement of migration.up) await execute(statement);
+          await execute('insert into schema_migrations (name) values (?)', [
+            migration.name,
+          ]);
+          console.info(`Applied ${migration.name}`);
+        }
       } else {
+        for (const migration of [...migrations].reverse()) {
+          const result = await execute(
+            'select name from schema_migrations where name = ?',
+            [migration.name],
+          );
+          const rows = result as unknown as { name: string }[];
+          if (rows.length === 0) continue;
+
+          for (const statement of migration.down) await execute(statement);
+          await execute('delete from schema_migrations where name = ?', [
+            migration.name,
+          ]);
+          console.info(`Reverted ${migration.name}`);
+          return;
+        }
         console.info(`No migration to ${direction}`);
       }
     });

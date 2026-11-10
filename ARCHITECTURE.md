@@ -19,7 +19,7 @@ O objetivo é processar operações de apostas de múltiplos provedores com entr
 
 As dependências devem apontar para dentro, em direção ao domínio:
 
-1. **Domínio:** `Money`, `Wallet` e `WagerTransaction` já existem; WalletLedgerEntry e demais invariantes serão adicionados sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
+1. **Domínio:** `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` existem sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
 2. **Aplicação:** casos de uso que coordenam validação, transação financeira, idempotência, publicação de eventos e consultas.
 3. **Infraestrutura:** repositórios MikroORM, transações PostgreSQL, clientes e workers SQS, inbox/outbox e observabilidade.
 4. **Apresentação:** controllers HTTP, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
@@ -40,7 +40,7 @@ O PostgreSQL é a autoridade final para concorrência e invariantes. A unidade d
 
 **Estratégia proposta:** dentro de uma transação SQL, bloquear a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`), validar o saldo e referências, gravar a transação e o ledger, atualizar o saldo/versionamento e inserir os eventos na outbox. A transação inteira confirma ou reverte em conjunto. Isso serializa operações concorrentes da mesma wallet e permite que wallets diferentes avancem em paralelo em múltiplas instâncias.
 
-Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação e imutabilidade do ledger. A consistência entre o saldo materializado e a soma do ledger deve ser mantida por cada caso de uso transacional e conferida por reconciliação.
+Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, exceto REFUND e ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. A reversão cria um novo lançamento oposto, sem alterar o original. A consistência entre o saldo materializado e a soma do ledger deve ser mantida por cada caso de uso transacional e conferida por reconciliação.
 
 ## Idempotência e identidade de transação
 
@@ -86,7 +86,7 @@ A migration `001-initial-structure` cria a estrutura inicial de wallets, transa�
 
 Logs estruturados devem incluir correlação, messageId, transactionId, walletId e providerId, sem registrar dados sensíveis ou valores financeiros completos. Métricas mínimas: transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock, atraso da outbox e latência.
 
-Os testes unitários de `Money`, `Wallet` e `WagerTransaction` cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação e códigos de falha. Ainda serão necessários testes de ledger, integração real com PostgreSQL e LocalStack, paralelismo, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+Os testes unitários de `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos e regras de reversão. Ainda serão necessários testes de integração real com PostgreSQL e LocalStack, paralelismo, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
 
 ## Decisões ainda revisáveis
 
