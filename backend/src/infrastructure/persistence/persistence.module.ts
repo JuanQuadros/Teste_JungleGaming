@@ -6,6 +6,7 @@ import {
   WALLET_TRANSACTION_UNIT_OF_WORK,
   WAGER_TRANSACTION_REPOSITORY,
   WALLET_REPOSITORY,
+  OUTBOX_EVENT_REPOSITORY,
 } from '../../application/ports/persistence.repositories.js';
 import {
   InboxMessageEntity,
@@ -16,6 +17,7 @@ import {
 } from './entities/index.js';
 import {
   MikroOrmWalletLedgerEntryRepository,
+  MikroOrmOutboxEventRepository,
   MikroOrmWagerTransactionRepository,
   MikroOrmWalletRepository,
 } from './repositories/index.js';
@@ -36,6 +38,7 @@ import { MikroOrmWalletTransactionUnitOfWork } from './mikro-orm-wallet-transact
     MikroOrmWalletRepository,
     MikroOrmWagerTransactionRepository,
     MikroOrmWalletLedgerEntryRepository,
+    MikroOrmOutboxEventRepository,
     MikroOrmWalletTransactionUnitOfWork,
     { provide: WALLET_REPOSITORY, useExisting: MikroOrmWalletRepository },
     {
@@ -54,6 +57,10 @@ import { MikroOrmWalletTransactionUnitOfWork } from './mikro-orm-wallet-transact
       provide: WALLET_CREATION_UNIT_OF_WORK,
       useExisting: MikroOrmWalletTransactionUnitOfWork,
     },
+    {
+      provide: OUTBOX_EVENT_REPOSITORY,
+      useExisting: MikroOrmOutboxEventRepository,
+    },
   ],
   exports: [
     WALLET_REPOSITORY,
@@ -61,6 +68,7 @@ import { MikroOrmWalletTransactionUnitOfWork } from './mikro-orm-wallet-transact
     WALLET_LEDGER_ENTRY_REPOSITORY,
     WALLET_TRANSACTION_UNIT_OF_WORK,
     WALLET_CREATION_UNIT_OF_WORK,
+    OUTBOX_EVENT_REPOSITORY,
   ],
 })
 export class PersistenceModule {}

@@ -137,6 +137,20 @@ export class ProcessWagerTransactionUseCase {
           pending.recordReferenceRetry(nextAttemptAt);
           if (expired) {
             pending.reject(WagerRejectionCode.REFERENCE_NOT_FOUND);
+            this.recordOutboxEvent(context, {
+              id: randomUUID(),
+              aggregateId: pending.id,
+              eventType: 'WagerTransactionRejected',
+              payload: {
+                transactionId: pending.id,
+                providerId: pending.providerId,
+                externalTransactionId: pending.externalTransactionId,
+                kind: pending.kind,
+                failureCode: WagerRejectionCode.REFERENCE_NOT_FOUND,
+                balance: context.wallet?.balance.toJSON().amount ?? '0.00',
+              },
+              occurredAt: now,
+            });
             context.outboxEvents.insert({
               id: randomUUID(),
               aggregateId: pending.id,
@@ -198,7 +212,7 @@ export class ProcessWagerTransactionUseCase {
     ) {
       return this.reject(
         snapshot,
-        transactions,
+        context,
         WagerRejectionCode.INVALID_REFERENCE,
         wallet.balance,
         existing,
@@ -219,7 +233,7 @@ export class ProcessWagerTransactionUseCase {
           if (error instanceof InsufficientBalanceError) {
             return this.reject(
               snapshot,
-              transactions,
+              context,
               WagerRejectionCode.INSUFFICIENT_BALANCE,
               wallet.balance,
               existing,
@@ -282,6 +296,36 @@ export class ProcessWagerTransactionUseCase {
     } else {
       transactions.insert(processed);
     }
+    this.recordOutboxEvent(context, {
+      id: randomUUID(),
+      aggregateId: processed.id,
+      eventType: 'WagerTransactionProcessed',
+      payload: {
+        transactionId: processed.id,
+        providerId: processed.providerId,
+        externalTransactionId: processed.externalTransactionId,
+        kind: processed.kind,
+        amount: processed.amount.toJSON().amount,
+        currency: processed.currency,
+        balance: wallet.balance.toJSON().amount,
+      },
+      occurredAt: new Date(),
+    });
+    if (balanceChanged) {
+      this.recordOutboxEvent(context, {
+        id: randomUUID(),
+        aggregateId: wallet.id,
+        eventType: 'WalletBalanceChanged',
+        payload: {
+          walletId: wallet.id,
+          transactionId: processed.id,
+          currency: wallet.currency,
+          balanceBefore: balanceBefore.toJSON().amount,
+          balanceAfter: wallet.balance.toJSON().amount,
+        },
+        occurredAt: new Date(),
+      });
+    }
     return processed;
   }
 
@@ -301,7 +345,7 @@ export class ProcessWagerTransactionUseCase {
     ) {
       return this.reject(
         snapshot,
-        transactions,
+        context,
         WagerRejectionCode.INVALID_REFERENCE,
         balanceBefore,
         existing,
@@ -321,6 +365,20 @@ export class ProcessWagerTransactionUseCase {
       );
       pending.recordResponseBalance(balanceBefore);
       transactions.insert(pending);
+      this.recordOutboxEvent(context, {
+        id: randomUUID(),
+        aggregateId: pending.id,
+        eventType: 'WagerTransactionPendingReference',
+        payload: {
+          transactionId: pending.id,
+          providerId: pending.providerId,
+          externalTransactionId: pending.externalTransactionId,
+          referenceTransactionId: pending.referenceTransactionId,
+          referenceExternalTransactionId:
+            pending.referenceExternalTransactionId,
+        },
+        occurredAt: new Date(),
+      });
       return pending;
     }
 
@@ -328,7 +386,7 @@ export class ProcessWagerTransactionUseCase {
     if (!originalEntry) {
       return this.reject(
         snapshot,
-        transactions,
+        context,
         WagerRejectionCode.INVALID_REFERENCE,
         balanceBefore,
         existing,
@@ -351,7 +409,7 @@ export class ProcessWagerTransactionUseCase {
       if (error instanceof RollbackWouldCauseNegativeBalanceError) {
         return this.reject(
           snapshot,
-          transactions,
+          context,
           error.code,
           balanceBefore,
           existing,
@@ -363,7 +421,7 @@ export class ProcessWagerTransactionUseCase {
       ) {
         return this.reject(
           snapshot,
-          transactions,
+          context,
           WagerRejectionCode.INVALID_REFERENCE,
           balanceBefore,
           existing,
@@ -376,7 +434,7 @@ export class ProcessWagerTransactionUseCase {
   /** Persiste uma rejeição auditável sem modificar saldo ou ledger. */
   private async reject(
     snapshot: WagerTransactionSnapshot,
-    transactions: WalletTransactionContext['transactions'],
+    context: WalletTransactionContext,
     code: (typeof WagerRejectionCode)[keyof typeof WagerRejectionCode],
     responseBalance: Money,
     existing?: WagerTransaction,
@@ -387,10 +445,37 @@ export class ProcessWagerTransactionUseCase {
       rejected.recordResponseBalance(responseBalance);
     }
     if (existing) {
-      await transactions.update(rejected);
+      await context.transactions.update(rejected);
     } else {
-      transactions.insert(rejected);
+      context.transactions.insert(rejected);
     }
+    this.recordOutboxEvent(context, {
+      id: randomUUID(),
+      aggregateId: rejected.id,
+      eventType: 'WagerTransactionRejected',
+      payload: {
+        transactionId: rejected.id,
+        providerId: rejected.providerId,
+        externalTransactionId: rejected.externalTransactionId,
+        kind: rejected.kind,
+        failureCode: rejected.failureCode,
+        balance: responseBalance.toJSON().amount,
+      },
+      occurredAt: new Date(),
+    });
     return rejected;
+  }
+
+  private recordOutboxEvent(
+    context: WalletTransactionContext,
+    event: {
+      id: string;
+      aggregateId: string;
+      eventType: string;
+      payload: Record<string, unknown>;
+      occurredAt: Date;
+    },
+  ): void {
+    context.outboxEvents.insert(event);
   }
 }

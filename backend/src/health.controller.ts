@@ -30,6 +30,12 @@ export class HealthController {
       this.sqsClient.send(
         new GetQueueUrlCommand({ QueueName: 'wager-transactions-dlq.fifo' }),
       ),
+      this.sqsClient.send(
+        new GetQueueUrlCommand({ QueueName: 'wager-events.fifo' }),
+      ),
+      this.sqsClient.send(
+        new GetQueueUrlCommand({ QueueName: 'wager-events-dlq.fifo' }),
+      ),
     ]);
 
     const checkStatus = (
@@ -40,10 +46,20 @@ export class HealthController {
       postgres: checkStatus(results[0]),
       transactionsQueue: checkStatus(results[1]),
       deadLetterQueue: checkStatus(results[2]),
+      eventsQueue: checkStatus(results[3]),
+      eventsDeadLetterQueue: checkStatus(results[4]),
     };
     this.metrics.recordHealthCheck('postgres', checks.postgres);
-    this.metrics.recordHealthCheck('transactions_queue', checks.transactionsQueue);
+    this.metrics.recordHealthCheck(
+      'transactions_queue',
+      checks.transactionsQueue,
+    );
     this.metrics.recordHealthCheck('dead_letter_queue', checks.deadLetterQueue);
+    this.metrics.recordHealthCheck('events_queue', checks.eventsQueue);
+    this.metrics.recordHealthCheck(
+      'events_dead_letter_queue',
+      checks.eventsDeadLetterQueue,
+    );
 
     if (Object.values(checks).some((status) => status !== 'ok')) {
       throw new ServiceUnavailableException({

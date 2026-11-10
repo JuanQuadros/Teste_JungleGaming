@@ -18,3 +18,19 @@ queue_attributes="$(printf '{"FifoQueue":"true","ContentBasedDeduplication":"fal
 awslocal sqs create-queue \
   --queue-name wager-transactions.fifo \
   --attributes "$queue_attributes"
+
+# Cria uma fila de eventos para receber publicações do transactional outbox.
+events_dlq_url="$(awslocal sqs create-queue \
+  --queue-name wager-events-dlq.fifo \
+  --attributes FifoQueue=true,ContentBasedDeduplication=false \
+  --query QueueUrl --output text)"
+
+events_dlq_arn="$(awslocal sqs get-queue-attributes \
+  --queue-url "$events_dlq_url" \
+  --attribute-names QueueArn \
+  --query Attributes.QueueArn --output text)"
+
+events_queue_attributes="$(printf '{"FifoQueue":"true","ContentBasedDeduplication":"false","RedrivePolicy":"{\\"deadLetterTargetArn\\":\\"%s\\",\\"maxReceiveCount\\":\\"5\\"}"}' "$events_dlq_arn")"
+awslocal sqs create-queue \
+  --queue-name wager-events.fifo \
+  --attributes "$events_queue_attributes"

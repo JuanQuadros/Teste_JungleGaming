@@ -207,6 +207,7 @@ describe('Wager idempotency (PostgreSQL)', () => {
 
     expect(first).not.toBeNull();
     expect(redelivery).toBeNull();
+    if (!first) throw new Error('Inbox delivery did not process its operation.');
     expect(await walletBalance()).toBe(
       Money.from({ amount: balanceBefore, currency: 'BRL' })
         .subtract(Money.from({ amount: '10.00', currency: 'BRL' }))
@@ -220,6 +221,20 @@ describe('Wager idempotency (PostgreSQL)', () => {
     expect(inboxRows).toHaveLength(1);
     expect(inboxRows[0].payload_hash).toBe(inboxMessage.payloadHash);
     expect(inboxRows[0].processed_at).not.toBeNull();
+    const transactionEvents = await appOrm.em.getConnection().execute(
+      `select event_type from "${schemaName}".outbox_messages
+       where aggregate_id = ?`,
+      [first.id],
+    ) as { event_type: string }[];
+    expect(transactionEvents.map(({ event_type }) => event_type)).toContain(
+      'WagerTransactionProcessed',
+    );
+    const walletEvents = await appOrm.em.getConnection().execute(
+      `select count(*)::int as count from "${schemaName}".outbox_messages
+       where aggregate_id = ? and event_type = ?`,
+      [walletId, 'WalletBalanceChanged'],
+    ) as { count: number }[];
+    expect(walletEvents[0].count).toBeGreaterThan(0);
 
     await expect(
       submit.execute(input, idempotencyKey, {

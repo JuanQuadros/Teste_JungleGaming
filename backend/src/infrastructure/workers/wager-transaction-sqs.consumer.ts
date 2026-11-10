@@ -48,7 +48,6 @@ export class WagerTransactionSqsConsumer
     this.stopping = true;
     this.abortController.abort();
     if (this.consumeLoop) await this.consumeLoop;
-    this.sqsClient.destroy();
   }
 
   private async run(): Promise<void> {

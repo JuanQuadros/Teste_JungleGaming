@@ -195,6 +195,15 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       status: 'PROCESSED',
       balance: '50.00',
     });
+    const openingEvents = (await appOrm.em.getConnection().execute(
+      `select event_type from "${schemaName}".outbox_messages
+       where aggregate_id in (?, ?)`,
+      [opening.body.transactionId, response.body.walletId],
+    )) as { event_type: string }[];
+    expect(openingEvents.map(({ event_type }) => event_type).sort()).toEqual([
+      'WagerTransactionProcessed',
+      'WalletBalanceChanged',
+    ]);
 
     await request(app.getHttpServer())
       .post('/wallets')
