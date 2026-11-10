@@ -1,6 +1,6 @@
 # Jungle Gaming — Processador Distribuído de Apostas
 
-Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura está preparada e os componentes de domínio `Money` e `Wallet` já foram implementados. Os fluxos financeiros ainda não foram implementados.
+Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura está preparada e os componentes de domínio `Money`, `Wallet` e `WagerTransaction` já foram implementados. Os fluxos financeiros ainda não foram implementados.
 
 ## Tecnologias
 
@@ -91,4 +91,4 @@ Os testes de integração exigidos pelo desafio ainda serão adicionados quando 
 
 ## Estado atual
 
-`Money` representa valores com centavos `BigInt`, valida entradas e serializa com duas casas decimais. `Wallet` aplica moeda consistente, saldo não negativo e versão crescente nas alterações aceitas. Os testes unitários cobrem os invariantes desses componentes. Apostas, ledger, idempotência e processamento assíncrono ainda não foram implementados.
+`Money` representa valores com centavos `BigInt`; `Wallet` protege moeda, saldo não negativo e versão; `WagerTransaction` controla estados explícitos e códigos estáveis de falha. Os testes unitários cobrem esses invariantes. O ledger, a persistência financeira, a idempotência e o processamento assíncrono ainda não foram implementados.

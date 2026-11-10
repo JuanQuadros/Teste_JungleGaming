@@ -2,7 +2,7 @@
 
 ## Estado e escopo
 
-Este documento registra as decisões que devem orientar a implementação do desafio. A infraestrutura está preparada e os componentes de domínio `Money` e `Wallet` já foram implementados. Os casos de uso financeiros e os workers ainda não foram implementados.
+Este documento registra as decisões que devem orientar a implementação do desafio. A infraestrutura está preparada e os componentes de domínio `Money`, `Wallet` e `WagerTransaction` já foram implementados. Os casos de uso financeiros e os workers ainda não foram implementados.
 
 O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira.
 
@@ -19,7 +19,7 @@ O objetivo é processar operações de apostas de múltiplos provedores com entr
 
 As dependências devem apontar para dentro, em direção ao domínio:
 
-1. **Domínio:** `Money` e `Wallet` já existem; WagerTransaction, WalletLedgerEntry e demais invariantes serão adicionados sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
+1. **Domínio:** `Money`, `Wallet` e `WagerTransaction` já existem; WalletLedgerEntry e demais invariantes serão adicionados sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
 2. **Aplicação:** casos de uso que coordenam validação, transação financeira, idempotência, publicação de eventos e consultas.
 3. **Infraestrutura:** repositórios MikroORM, transações PostgreSQL, clientes e workers SQS, inbox/outbox e observabilidade.
 4. **Apresentação:** controllers HTTP, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
@@ -56,7 +56,9 @@ Chaves em memória e deduplicação do broker são apenas otimizações, nunca g
 
 BET, WIN, LOSS, REFUND e ROLLBACK serão tratados por um caso de uso compartilhado pela entrada HTTP e pelo consumidor SQS. REFUND e ROLLBACK exigem referência válida do mesmo provedor, jogador, wallet, moeda e rodada. Referência ainda ausente produz `PENDING_REFERENCE`, sem movimento de saldo, para reprocessamento com backoff e limite documentado.
 
-Estados terminais, rejeições auditáveis e códigos de falha estáveis serão definidos no domínio. Reversões não podem acontecer mais de uma vez nem tornar o saldo negativo.
+`WagerTransaction` começa em `PENDING` e pode aguardar referência, voltar ao processamento ou encerrar como `PROCESSED`, `REJECTED` ou `FAILED`. Estados terminais não aceitam novas transições. A reidratação valida e restaura o estado persistido diretamente, sem repetir o histórico de transições. Rejeições possuem códigos estáveis para saldo insuficiente, referência inválida e reversão que causaria saldo negativo; falhas técnicas usam `PROCESSING_FAILED`. `OPENING` existe no modelo persistido, mas a factory de entrada externa exclui esse tipo: sua criação fica reservada ao código interno. As interfaces HTTP e SQS ainda deverão respeitar essa separação.
+
+Reversões não podem acontecer mais de uma vez nem tornar o saldo negativo.
 
 ## SQS, inbox e outbox
 
@@ -84,7 +86,7 @@ A migration `001-initial-structure` cria a estrutura inicial de wallets, transa�
 
 Logs estruturados devem incluir correlação, messageId, transactionId, walletId e providerId, sem registrar dados sensíveis ou valores financeiros completos. Métricas mínimas: transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock, atraso da outbox e latência.
 
-Os testes unitários de `Money` já cobrem formato decimal, precisão exata, entradas inválidas, imutabilidade e conflito de moeda. Ainda serão necessários testes dos demais elementos do domínio, integração real com PostgreSQL e LocalStack, paralelismo, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+Os testes unitários de `Money`, `Wallet` e `WagerTransaction` cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação e códigos de falha. Ainda serão necessários testes de ledger, integração real com PostgreSQL e LocalStack, paralelismo, redelivery, falhas após commit, publishers concorrentes e reinicialização. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
 
 ## Decisões ainda revisáveis
 
