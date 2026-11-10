@@ -188,3 +188,54 @@ export function parseWagerTransactionRequest(
       : {}),
   };
 }
+
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/;
+
+export function parseIdempotencyKey(value: unknown): string {
+  if (typeof value !== 'string' || !IDEMPOTENCY_KEY_PATTERN.test(value)) {
+    throw new InvalidWagerRequestError([
+      { field: 'Idempotency-Key', code: 'INVALID_IDEMPOTENCY_KEY' },
+    ]);
+  }
+  return value;
+}
+
+export interface QueueWagerTransactionMessage {
+  idempotencyKey: string;
+  transaction: WagerTransactionRequestDto;
+}
+
+export function parseQueueWagerTransactionMessage(
+  value: unknown,
+): QueueWagerTransactionMessage {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidWagerRequestError([
+      { field: 'message', code: 'OBJECT_REQUIRED' },
+    ]);
+  }
+  const message = value as Record<string, unknown>;
+  const issues: RequestValidationIssue[] = [];
+  for (const field of Object.keys(message)) {
+    if (field !== 'idempotencyKey' && field !== 'transaction') {
+      issues.push({ field, code: 'UNKNOWN_FIELD' });
+    }
+  }
+  let idempotencyKey: string | null = null;
+  try {
+    idempotencyKey = parseIdempotencyKey(message.idempotencyKey);
+  } catch (error) {
+    if (!(error instanceof InvalidWagerRequestError)) throw error;
+    issues.push(...error.issues);
+  }
+  let transaction: WagerTransactionRequestDto | null = null;
+  try {
+    transaction = parseWagerTransactionRequest(message.transaction);
+  } catch (error) {
+    if (!(error instanceof InvalidWagerRequestError)) throw error;
+    issues.push(...error.issues);
+  }
+  if (issues.length > 0 || !idempotencyKey || !transaction) {
+    throw new InvalidWagerRequestError(issues);
+  }
+  return { idempotencyKey, transaction };
+}

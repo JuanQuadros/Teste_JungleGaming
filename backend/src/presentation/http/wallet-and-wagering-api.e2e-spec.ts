@@ -14,6 +14,7 @@ import {
 import { CreateWalletUseCase } from '../../application/wallet-management/create-wallet.use-case.js';
 import { ReconcileWalletUseCase } from '../../application/wallet-management/reconcile-wallet.use-case.js';
 import { ProcessWagerTransactionUseCase } from '../../application/wager-processing/process-wager-transaction.use-case.js';
+import { SubmitWagerTransactionUseCase } from '../../application/wager-processing/submit-wager-transaction.use-case.js';
 import { RetryPendingReferencesUseCase } from '../../application/wager-processing/retry-pending-references.use-case.js';
 import { mikroOrmConfig } from '../../mikro-orm.config.js';
 import {
@@ -114,6 +115,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         CreateWalletUseCase,
         ReconcileWalletUseCase,
         ProcessWagerTransactionUseCase,
+        SubmitWagerTransactionUseCase,
         RetryPendingReferencesUseCase,
         {
           provide: WALLET_CREATION_UNIT_OF_WORK,
@@ -195,6 +197,15 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       status: 'PROCESSED',
       balance: '50.00',
     });
+    const openingEvents = (await appOrm.em.getConnection().execute(
+      `select event_type from "${schemaName}".outbox_messages
+       where aggregate_id in (?, ?)`,
+      [opening.body.transactionId, response.body.walletId],
+    )) as { event_type: string }[];
+    expect(openingEvents.map(({ event_type }) => event_type).sort()).toEqual([
+      'WagerTransactionProcessed',
+      'WalletBalanceChanged',
+    ]);
 
     await request(app.getHttpServer())
       .post('/wallets')

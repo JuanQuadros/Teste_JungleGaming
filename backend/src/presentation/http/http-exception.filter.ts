@@ -14,7 +14,7 @@ import {
   IdempotencyConflictError,
   TransientInfrastructureError,
 } from './http-api-error.js';
-import { InvalidWagerRequestError } from './wager-transaction-request.dto.js';
+import { InvalidWagerRequestError } from '../../application/wager-processing/wager-transaction-request.js';
 import { WalletAlreadyExistsError } from '../../application/wallet-management/wallet-already-exists.error.js';
 
 interface ApiErrorResponse {

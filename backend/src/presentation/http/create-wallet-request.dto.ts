@@ -2,7 +2,7 @@ import { InvalidMoneyError, Money } from '../../domain/money.js';
 import {
   InvalidWagerRequestError,
   type RequestValidationIssue,
-} from './wager-transaction-request.dto.js';
+} from '../../application/wager-processing/wager-transaction-request.js';
 
 export interface CreateWalletRequestDto {
   playerId: string;

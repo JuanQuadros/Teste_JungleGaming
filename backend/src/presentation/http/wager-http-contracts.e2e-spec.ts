@@ -17,7 +17,7 @@ import {
   TransientInfrastructureError,
 } from './http-api-error.js';
 import { IdempotencyKey, IdempotencyKeyPipe } from './idempotency-key.pipe.js';
-import { InvalidWagerRequestError } from './wager-transaction-request.dto.js';
+import { InvalidWagerRequestError } from '../../application/wager-processing/wager-transaction-request.js';
 import { WagerTransactionRequestPipe } from './wager-transaction-request.pipe.js';
 
 @Controller('contracts')

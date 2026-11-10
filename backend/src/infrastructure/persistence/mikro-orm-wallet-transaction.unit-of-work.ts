@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
 import type {
+  OutboxEvent,
+  InboxMessage,
   WalletCreationUnitOfWorkPort,
   WalletTransactionContext,
   WalletTransactionUnitOfWorkPort,
@@ -19,6 +21,7 @@ import {
   MikroOrmOutboxEventRepository,
 } from './repositories/index.js';
 import { PersistenceRecordNotFoundError } from './repositories/persistence-record-not-found.error.js';
+import { InboxMessageConflictError } from './inbox-message-conflict.error.js';
 
 /** Abre a transação e serializa por chave antes de bloquear a wallet. */
 @Injectable()
@@ -31,6 +34,7 @@ export class MikroOrmWalletTransactionUnitOfWork
     wallet: Wallet,
     openingTransaction: WagerTransaction | null,
     openingEntry: WalletLedgerEntry | null,
+    outboxEvents: OutboxEvent[] = [],
   ): Promise<void> {
     try {
       await this.entityManager.transactional(async (em) => {
@@ -44,6 +48,8 @@ export class MikroOrmWalletTransactionUnitOfWork
           new MikroOrmWalletLedgerEntryRepository(em).insert(openingEntry);
           await em.flush();
         }
+        const outboxRepository = new MikroOrmOutboxEventRepository(em);
+        for (const event of outboxEvents) outboxRepository.insert(event);
       });
     } catch (error) {
       if (
@@ -64,19 +70,10 @@ export class MikroOrmWalletTransactionUnitOfWork
     walletId: string,
     idempotencyKey: string,
     operation: (context: WalletTransactionContext) => Promise<T>,
+    inboxMessage?: InboxMessage,
   ): Promise<T> {
     return this.entityManager.transactional(
       async (transactionalEntityManager) => {
-        // A trava é por chave, portanto operações independentes não se bloqueiam entre si.
-        await transactionalEntityManager
-          .getConnection()
-          .execute(
-            'select pg_advisory_xact_lock(hashtextextended(?, 0))',
-            [idempotencyKey],
-            'all',
-            transactionalEntityManager.getTransactionContext(),
-          );
-
         const wallets = new MikroOrmWalletRepository(
           transactionalEntityManager,
         );
@@ -89,18 +86,96 @@ export class MikroOrmWalletTransactionUnitOfWork
         const outboxEvents = new MikroOrmOutboxEventRepository(
           transactionalEntityManager,
         );
+        const inboxSchema = transactionalEntityManager.config.getSchema();
+        const inboxTable = inboxSchema
+          ? `"${inboxSchema.replaceAll('"', '""')}"."inbox_messages"`
+          : 'inbox_messages';
+        const complete = async (context: WalletTransactionContext) => {
+          const result = await operation(context);
+          if (inboxMessage) {
+            await transactionalEntityManager.getConnection().execute(
+              `update ${inboxTable}
+               set processed_at = now()
+               where consumer_name = ? and message_id = ?`,
+              [inboxMessage.consumerName, inboxMessage.messageId],
+              'all',
+              transactionalEntityManager.getTransactionContext(),
+            );
+          }
+          return result;
+        };
+
+        if (inboxMessage) {
+          const inserted = await transactionalEntityManager
+            .getConnection()
+            .execute(
+              `insert into ${inboxTable}
+                (consumer_name, message_id, payload_hash)
+               values (?, ?, ?)
+               on conflict (consumer_name, message_id) do nothing
+               returning payload_hash`,
+              [
+                inboxMessage.consumerName,
+                inboxMessage.messageId,
+                inboxMessage.payloadHash,
+              ],
+              'all',
+              transactionalEntityManager.getTransactionContext(),
+            );
+          const insertedRows = inserted as unknown as {
+            payload_hash: string;
+          }[];
+          if (insertedRows.length === 0) {
+            const existing = await transactionalEntityManager
+              .getConnection()
+              .execute(
+                `select payload_hash from ${inboxTable}
+                 where consumer_name = ? and message_id = ?`,
+                [inboxMessage.consumerName, inboxMessage.messageId],
+                'all',
+                transactionalEntityManager.getTransactionContext(),
+              );
+            const existingRows = existing as unknown as {
+              payload_hash: string;
+            }[];
+            if (existingRows[0]?.payload_hash !== inboxMessage.payloadHash) {
+              throw new InboxMessageConflictError();
+            }
+            return operation({
+              wallet: null,
+              wallets,
+              transactions,
+              ledgerEntries,
+              outboxEvents,
+              existingIdempotentTransaction: null,
+              duplicateInboxMessage: true,
+            });
+          }
+        }
+
+        // A trava é por chave, portanto operações independentes não se bloqueiam entre si.
+        await transactionalEntityManager
+          .getConnection()
+          .execute(
+            'select pg_advisory_xact_lock(hashtextextended(?, 0))',
+            [idempotencyKey],
+            'all',
+            transactionalEntityManager.getTransactionContext(),
+          );
+
         const existingIdempotentTransaction =
           await transactions.findByIdempotencyKey(idempotencyKey);
 
         // Replay ou conflito são resolvidos antes de buscar e bloquear a wallet.
         if (existingIdempotentTransaction) {
-          return operation({
+          return complete({
             wallet: null,
             wallets,
             transactions,
             ledgerEntries,
             outboxEvents,
             existingIdempotentTransaction,
+            duplicateInboxMessage: false,
           });
         }
 
@@ -115,13 +190,14 @@ export class MikroOrmWalletTransactionUnitOfWork
           throw new PersistenceRecordNotFoundError('wallet', walletId);
         }
 
-        return operation({
+        return complete({
           wallet,
           wallets,
           transactions,
           ledgerEntries,
           outboxEvents,
           existingIdempotentTransaction: null,
+          duplicateInboxMessage: false,
         });
       },
     );
@@ -165,6 +241,7 @@ export class MikroOrmWalletTransactionUnitOfWork
             ledgerEntries,
             outboxEvents,
             existingIdempotentTransaction,
+            duplicateInboxMessage: false,
           });
         }
 
@@ -190,6 +267,7 @@ export class MikroOrmWalletTransactionUnitOfWork
           ledgerEntries,
           outboxEvents,
           existingIdempotentTransaction,
+          duplicateInboxMessage: false,
         });
       },
     );
