@@ -105,10 +105,10 @@ Na raiz do repositório, crie os arquivos de ambiente:
 
 ```powershell
 # Cria o ambiente do Docker a partir do exemplo.
-Copy-Item docker\.env.example docker\.env
+Copy-Item docker\\.env.example docker\\.env
 
 # Cria o ambiente do backend a partir do exemplo.
-Copy-Item backend\.env.example backend\.env
+Copy-Item backend\\.env.example backend\\.env
 ```
 
 Edite `docker/.env` e informe o token exigido pelo LocalStack.
@@ -223,12 +223,3 @@ Esses resultados representam uma execução registrada durante o desenvolvimento
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): arquitetura, decisões técnicas, fluxos, invariantes e limitações.
 - `GUIA.md`: material pessoal de estudo e preparação para apresentação técnica. Não faz parte da documentação pública do projeto.
-
-## Limitações conhecidas
-
-- Autenticação de provedores não implementada.
-- A publicação PostgreSQL/SQS não é exactly-once.
-- Consumidores externos precisam deduplicar eventos por `eventId`.
-- A reconciliação identifica divergências, mas não corrige automaticamente os dados.
-- O cenário de múltiplos consumers foi testado com instâncias independentes no mesmo processo, não com três processos NestJS implantados separadamente.
-- O ambiente E2E depende de PostgreSQL, Docker e LocalStack disponíveis.
