@@ -35,6 +35,10 @@ export class StructuredLogger implements LoggerService {
     this.emit('info', event, fields);
   }
 
+  errorEvent(event: string, fields: Record<string, string | number>): void {
+    this.emit('error', event, fields);
+  }
+
   private write(
     level: Exclude<LogLevel, 'log'> | 'info',
     message: unknown,

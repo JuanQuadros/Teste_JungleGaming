@@ -74,6 +74,8 @@ Eventos mínimos: `WagerTransactionProcessed`, `WagerTransactionRejected`, `Wage
 
 Controllers HTTP convertem contratos externos para casos de uso e traduzem erros para respostas estáveis. Payload inválido, conflito de idempotência, rejeição de negócio, processamento pendente e falha transitória devem ser distinguíveis.
 
+A camada de apresentação fornece um pipe para validar o corpo da operação e um decorator com pipe para validar `Idempotency-Key`. O controller deve aplicá-los antes do caso de uso. O payload aceita apenas tipos externos; valores monetários são strings decimais positivas, a moeda deve ser ISO 4217 e REFUND/ROLLBACK exigem referência. O filtro global retorna `{ error: { code, message, details? }, correlationId? }`, sem expor mensagens internas ou payloads financeiros. Mapeamentos estáveis: 400 `INVALID_REQUEST`, 409 `IDEMPOTENCY_CONFLICT`, 422 rejeição de negócio, 202 `PROCESSING_PENDING`, 500 falha técnica terminal e 503 falha transitória. Os endpoints ainda serão conectados a esses componentes.
+
 Autenticação não vale pontos no desafio e é opcional. A decisão atual é não implementá-la nesta etapa. Se continuar fora do escopo, documentar o desenho futuro e deixar um ponto de extensão para identidade de provedor/guard. Não criar autenticação própria com tabela e hash de senha. Health checks ficam abertos; mensagens de fila são canal interno confiável, mas ainda passam pelas validações do domínio.
 
 `/health/live` verifica somente se o processo responde. `/health/ready` verifica PostgreSQL e as filas SQS necessárias.

@@ -76,6 +76,19 @@ caso contrário, a aplicação gera um UUID e devolve o identificador na respost
 O endpoint `GET /metrics` expõe métricas Prometheus para requisições HTTP,
 latência e verificações de dependências do readiness.
 
+A camada de apresentação também fornece validação para o payload de transação
+e para o header `Idempotency-Key`. O payload aceita somente BET, WIN, LOSS,
+REFUND ou ROLLBACK; valores são strings decimais positivas, moeda é ISO 4217,
+e REFUND/ROLLBACK exigem referência. O controller deve aplicar
+`WagerTransactionRequestPipe` em `@Body()` e `IdempotencyKeyPipe` pelo decorator
+`@IdempotencyKey()` antes de chamar o caso de uso.
+
+Erros HTTP usam `{ error: { code, message, details? }, correlationId? }`, com
+códigos estáveis: 400 `INVALID_REQUEST`, 409 `IDEMPOTENCY_CONFLICT`, 422 para
+rejeições de negócio, 202 `PROCESSING_PENDING`, 500 `PROCESSING_FAILED` terminal
+e 503 `SERVICE_UNAVAILABLE` transitório. O mapeador de resultado de domínio
+está preparado para ser usado pelos endpoints de transação.
+
 ## Migrations
 
 `bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–003 criam a estrutura inicial, protegem reversões no ledger e alinham o versionamento da wallet.
@@ -104,4 +117,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados e falhas; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. O marco 10 processa BET, WIN, LOSS, REFUND e ROLLBACK sob lock exclusivo da wallet, gravando saldo, transação e ledger juntos. Idempotência, API, outbox e processamento SQS ainda serão conectados aos casos de uso.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados e falhas; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. O marco 10 processa BET, WIN, LOSS, REFUND e ROLLBACK sob lock exclusivo da wallet, gravando saldo, transação e ledger juntos. A validação e o mapeamento de erros da API estão preparados, mas aguardam integração aos endpoints. Idempotência operacional, outbox e processamento SQS ainda serão conectados aos casos de uso.
