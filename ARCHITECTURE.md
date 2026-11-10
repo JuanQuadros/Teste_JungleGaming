@@ -53,7 +53,9 @@ automaticamente wallet ou ledger.
 A submissão de transações exige `Idempotency-Key`; o pipe valida a chave e o
 payload antes do caso de uso financeiro. `OPENING` permanece interno. A API
 ainda não autentica provedores; guards ou middleware são o ponto de extensão
-para autenticação sem acoplar credenciais ao domínio.
+para autenticação sem acoplar credenciais ao domínio. Respostas do POST incluem
+`idempotentReplay`, calculado pelo caso de uso a partir do registro persistido:
+`false` para a operação recém-processada e `true` para replay.
 
 O domínio não deve conhecer detalhes de transporte ou persistência. A aplicação coordena portas; a infraestrutura implementa essas portas.
 
@@ -73,7 +75,7 @@ O PostgreSQL é a autoridade final para concorrência e invariantes. A unidade d
 
 **Implementado nos marcos 10, 11 e 16:** `MikroOrmWalletTransactionUnitOfWork` abre uma transação SQL, serializa a mesma chave de idempotência com advisory lock e, para operação nova, bloqueia a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`). O hash SHA-256 é calculado sobre os campos de negócio. Chave e hash iguais retornam a transação persistida sem repetir efeitos; chave igual com hash diferente gera conflito. Para novas operações, saldo, transação, ledger e eventos de integração são gravados no mesmo Unit of Work. Erros técnicos revertem alterações; rejeições e pendências são persistidas sem movimento de saldo. Chaves e wallets diferentes podem avançar em paralelo.
 
-Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. A migration 007 instala constraint triggers adiados até o commit, exigindo que cada alteração do saldo materializado corresponda à soma dos lançamentos da mesma moeda e que inserções no ledger também preservem essa igualdade. Ela não corrige dados antigos: uma divergência preexistente deve ser reconciliada antes de voltar a alterar aquela wallet, pois os triggers rejeitam commits inconsistentes. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, exceto REFUND e ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. A reversão cria um novo lançamento oposto, sem alterar o original. A reconciliação também confere o saldo materializado.
+Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. A migration 007 instala constraint triggers adiados até o commit, exigindo que cada alteração do saldo materializado corresponda à soma dos lançamentos da mesma moeda e que inserções no ledger também preservem essa igualdade. Ela não corrige dados antigos: uma divergência preexistente deve ser reconciliada antes de voltar a alterar aquela wallet, pois os triggers rejeitam commits inconsistentes. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, inclusive o crédito de um REFUND, mas não outro ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. Cada reversão cria um novo lançamento oposto e vinculado ao lançamento revertido, sem alterar o original; constraints impedem a duplicidade. A reconciliação também confere o saldo materializado.
 
 ## Idempotência e identidade de transação
 
@@ -106,7 +108,7 @@ Falhas não confirmadas usam `ChangeMessageVisibility` com atraso exponencial de
 
 Os eventos de integração são inseridos na outbox dentro da transação financeira. Publishers concorrentes reservam registros pendentes com lease e `FOR UPDATE SKIP LOCKED`, publicam somente após o commit original e marcam sucesso ou agendam retry com backoff persistente. O lease e a condição de aggregate anterior não publicado evitam publicação concorrente e fora de ordem. Publicação duplicada após falha entre envio e marcação é esperada e deve ser segura para consumidores.
 
-Eventos publicados em `wager-events.fifo`: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`, `WagerTransactionReferenceExpired` e `WalletBalanceChanged` somente quando o saldo muda. `MessageGroupId` usa o aggregate e `MessageDeduplicationId` o ID persistido do evento. O envelope contém `eventId`, `aggregateId`, `eventType`, `occurredAt` e `payload`. Como SQS e PostgreSQL não compartilham uma transação, consumidores deduplicam pelo `eventId`.
+Eventos publicados em `wager-events.fifo`: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`, `WagerTransactionReferenceExpired` e `WalletBalanceChanged` somente quando o saldo muda. `MessageGroupId` usa o aggregate e `MessageDeduplicationId` o ID persistido do evento. O envelope versionado contém `eventId`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `version`, `eventType` e `data`. A migration 009 persiste versão, correlação e causação junto à outbox; classes concretas representam cada evento. Como SQS e PostgreSQL não compartilham uma transação, consumidores deduplicam pelo `eventId`.
 
 ## API, autenticação e health checks
 
@@ -135,11 +137,11 @@ Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntr
 ## Decisões ainda revisáveis
 
 - Autenticação de provedores não foi implementada, conforme permitido pelo desafio; seria integrada via IdP externo e guard/porta de identidade.
-- O envelope da outbox é JSON com `eventId`, `aggregateId`, `eventType`, `occurredAt` e `payload`; ainda não há classes tipadas por evento nem campos explícitos de versão, correlação ou causação no envelope. Consumidores externos devem tratar esse formato como contrato ainda não versionado.
+- A entrega do envelope é at-least-once, não exactly-once. O campo `version` permite evoluir o contrato, mas consumidores externos ainda devem deduplicar `eventId` e definir compatibilidade entre versões.
 - A publicação PostgreSQL/SQS é at-least-once, não exactly-once. Uma queda depois do envio e antes da marcação pode publicar duplicata; o consumidor deve deduplicar por `eventId`.
 - O LocalStack requer um token válido para a imagem configurada no Compose; os testes e2e dependem de PostgreSQL e LocalStack reais e falham quando essas dependências não estão disponíveis.
 - Wallets divergentes que já existiam antes da migration 007 não são corrigidas automaticamente; cada uma precisa de reconciliação explícita antes de novas alterações financeiras. A suíte e2e executa em schemas isolados e não corrige dados do banco de desenvolvimento.
 
 ## Evidência de validação
 
-Na revisão final, a suíte PostgreSQL/LocalStack executou **38 testes em 10 arquivos**, a suíte unitária executou **90 testes em 14 arquivos**, e lint e build passaram. A cobertura inclui o cenário de duas apostas concorrentes de `80.00 BRL` contra saldo `100.00 BRL`, 50 reenvios paralelos, três consumers com clientes independentes no mesmo processo de teste, crash depois do commit antes do ACK, dois publishers e REFUND/ROLLBACK antes da referência. A topologia real multi-processo não foi exercitada por este teste. Essas contagens descrevem a execução registrada no repositório, não garantem disponibilidade ou desempenho de produção.
+Na validação destas correções, a suíte PostgreSQL/LocalStack executou **39 testes em 10 arquivos**, a suíte unitária executou **91 testes em 14 arquivos**, e lint e build passaram. A cobertura inclui o cenário de duas apostas concorrentes de `80.00 BRL` contra saldo `100.00 BRL`, 50 reenvios paralelos, três consumers com clientes independentes no mesmo processo de teste, crash depois do commit antes do ACK, dois publishers, REFUND/ROLLBACK antes da referência e ROLLBACK de REFUND. A topologia real multi-processo não foi exercitada por este teste. Essas contagens descrevem a execução registrada no repositório, não garantem disponibilidade ou desempenho de produção.

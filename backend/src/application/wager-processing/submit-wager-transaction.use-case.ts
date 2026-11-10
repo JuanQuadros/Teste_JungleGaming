@@ -34,6 +34,35 @@ export class SubmitWagerTransactionUseCase {
     idempotencyKey: string,
     inboxMessage?: InboxMessage,
   ): Promise<WagerTransaction | null> {
+    return this.executeInternal(body, idempotencyKey, inboxMessage).then(
+      ({ transaction }) => transaction,
+    );
+  }
+
+  async executeWithReplayInfo(
+    body: WagerTransactionRequestDto,
+    idempotencyKey: string,
+  ): Promise<{ transaction: WagerTransaction; idempotentReplay: boolean }> {
+    const result = await this.executeInternal(body, idempotencyKey);
+    if (!result.transaction) {
+      throw new Error(
+        'Uma transação HTTP não pode ser deduplicada pela inbox.',
+      );
+    }
+    return {
+      transaction: result.transaction,
+      idempotentReplay: result.idempotentReplay,
+    };
+  }
+
+  private executeInternal(
+    body: WagerTransactionRequestDto,
+    idempotencyKey: string,
+    inboxMessage?: InboxMessage,
+  ): Promise<{
+    transaction: WagerTransaction | null;
+    idempotentReplay: boolean;
+  }> {
     const transaction = WagerTransaction.create({
       id: randomUUID(),
       providerId: body.providerId,
@@ -74,10 +103,11 @@ export class SubmitWagerTransactionUseCase {
             walletId: transaction.walletId,
             providerId: transaction.providerId,
           });
-          return null;
+          return { transaction: null, idempotentReplay: false };
         }
 
-        if (result.id !== transaction.id) {
+        const idempotentReplay = result.id !== transaction.id;
+        if (idempotentReplay) {
           this.metrics.recordDuplicateTransaction(source);
           this.logger.info('wager_transaction_duplicate', {
             source,
@@ -103,7 +133,7 @@ export class SubmitWagerTransactionUseCase {
           durationSeconds,
           ...(inboxMessage ? { messageId: inboxMessage.messageId } : {}),
         });
-        return result;
+        return { transaction: result, idempotentReplay };
       })
       .catch((error: unknown) => {
         const durationSeconds =

@@ -6,6 +6,7 @@ import {
   name as initialMigrationName,
   up as initialMigration,
 } from '../../migrations/001-initial-structure.js';
+import { up as versionedOutboxMigration } from '../../migrations/009-versioned-outbox-events.js';
 import { MikroOrmOutboxEventRepository } from './repositories/mikro-orm-outbox-event.repository.js';
 
 describe('Transactional outbox repository (PostgreSQL)', () => {
@@ -19,13 +20,20 @@ describe('Transactional outbox repository (PostgreSQL)', () => {
     await adminOrm.em.getConnection().execute(`create schema "${schemaName}"`);
     appOrm = await MikroORM.init({ ...mikroOrmConfig, schema: schemaName });
     await appOrm.em.transactional(async (em) => {
-      await em.getConnection().execute(
-        `set local search_path to "${schemaName}", public`,
-        [],
-        'all',
-        em.getTransactionContext(),
-      );
+      await em
+        .getConnection()
+        .execute(
+          `set local search_path to "${schemaName}", public`,
+          [],
+          'all',
+          em.getTransactionContext(),
+        );
       for (const statement of initialMigration) {
+        await em
+          .getConnection()
+          .execute(statement, [], 'all', em.getTransactionContext());
+      }
+      for (const statement of versionedOutboxMigration) {
         await em
           .getConnection()
           .execute(statement, [], 'all', em.getTransactionContext());
@@ -144,6 +152,9 @@ describe('Transactional outbox repository (PostgreSQL)', () => {
       id: randomUUID(),
       aggregateId,
       eventType: 'TestEvent',
+      correlationId: randomUUID(),
+      causationId: randomUUID(),
+      version: 1,
       payload: { value: 'test' },
       occurredAt,
     };

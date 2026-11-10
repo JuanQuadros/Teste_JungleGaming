@@ -49,6 +49,10 @@ import {
   name as ledgerTruncateProtectionName,
   up as ledgerTruncateProtectionUp,
 } from '../../migrations/008-ledger-truncate-protection.js';
+import {
+  name as versionedOutboxEventsName,
+  up as versionedOutboxEventsUp,
+} from '../../migrations/009-versioned-outbox-events.js';
 import { RequestContext } from '../../observability/request-context.js';
 import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
@@ -69,6 +73,7 @@ const migrations = [
   walletVersionOneUp,
   walletLedgerBalanceUp,
   ledgerTruncateProtectionUp,
+  versionedOutboxEventsUp,
 ];
 
 describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
@@ -108,6 +113,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         walletVersionOneName,
         walletLedgerBalanceName,
         ledgerTruncateProtectionName,
+        versionedOutboxEventsName,
       ];
       for (const [index, statements] of migrations.entries()) {
         for (const statement of statements) {
@@ -391,6 +397,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       status: 'PROCESSED',
       code: 'PROCESSED',
       balance: '40.00',
+      idempotentReplay: false,
     });
 
     const replay = await request(app.getHttpServer())
@@ -398,7 +405,10 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .set('Idempotency-Key', 'api-bet-1')
       .send(firstBody)
       .expect(200);
-    expect(replay.body).toEqual(first.body);
+    expect(replay.body).toEqual({
+      ...first.body,
+      idempotentReplay: true,
+    });
 
     const second = await request(app.getHttpServer())
       .post('/wagering/transactions')
@@ -571,7 +581,10 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .set('Idempotency-Key', pendingKey)
       .send(pendingBody)
       .expect(202);
-    expect(replay.body).toEqual(pending.body);
+    expect(replay.body).toEqual({
+      ...pending.body,
+      idempotentReplay: true,
+    });
   });
 
   it('resolves an out-of-order refund once its reference is processed', async () => {
@@ -641,6 +654,63 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .get(`/wallets/${wallet.body.walletId}/ledger`)
       .expect(200);
     expect(ledgerAfterReplay.body.items).toHaveLength(3);
+  });
+
+  it('rolls back a refund without duplicating its reversal or diverging from the ledger', async () => {
+    const playerId = randomUUID();
+    const wallet = await request(app.getHttpServer())
+      .post('/wallets')
+      .send({ playerId, currency: 'BRL', initialBalance: '20.00' })
+      .expect(201);
+    const bet = await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `refund-rollback-bet-${randomUUID()}`)
+      .send(transactionBody(wallet.body.walletId, playerId, '5.00'))
+      .expect(200);
+    const refund = await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `refund-rollback-refund-${randomUUID()}`)
+      .send({
+        ...transactionBody(wallet.body.walletId, playerId, '5.00'),
+        kind: 'REFUND',
+        referenceTransactionId: bet.body.transactionId,
+      })
+      .expect(200);
+
+    const rollback = await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `refund-rollback-${randomUUID()}`)
+      .send({
+        ...transactionBody(wallet.body.walletId, playerId, '5.00'),
+        kind: 'ROLLBACK',
+        referenceTransactionId: refund.body.transactionId,
+      })
+      .expect(200);
+    expect(rollback.body).toMatchObject({
+      status: 'PROCESSED',
+      balance: '15.00',
+    });
+
+    const duplicateRollback = await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `refund-rollback-duplicate-${randomUUID()}`)
+      .send({
+        ...transactionBody(wallet.body.walletId, playerId, '5.00'),
+        kind: 'ROLLBACK',
+        referenceTransactionId: refund.body.transactionId,
+      })
+      .expect(422);
+    expect(duplicateRollback.body.code).toBe('INVALID_REFERENCE');
+
+    const reconciliation = await request(app.getHttpServer())
+      .post(`/wallets/${wallet.body.walletId}/reconciliation`)
+      .expect(201);
+    expect(reconciliation.body).toMatchObject({
+      walletBalance: '15.00',
+      ledgerBalance: '15.00',
+      isConsistent: true,
+      entriesVerified: 4,
+    });
   });
 
   it('rejects a late reference from another round without applying a reversal', async () => {

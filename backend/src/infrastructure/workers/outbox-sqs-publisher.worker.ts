@@ -117,9 +117,12 @@ export class OutboxSqsPublisherWorker implements OnModuleInit, OnModuleDestroy {
           MessageBody: JSON.stringify({
             eventId: event.id,
             aggregateId: event.aggregateId,
-            eventType: event.eventType,
+            correlationId: event.correlationId,
+            ...(event.causationId ? { causationId: event.causationId } : {}),
             occurredAt: event.occurredAt.toISOString(),
-            payload: event.payload,
+            version: event.version,
+            eventType: event.eventType,
+            data: event.payload,
           }),
         }),
       );

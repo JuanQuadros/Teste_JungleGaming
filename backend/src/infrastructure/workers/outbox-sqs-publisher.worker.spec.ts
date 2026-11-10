@@ -17,6 +17,9 @@ const pendingEvent: PendingOutboxEvent = {
   id: '00000000-0000-4000-8000-000000000101',
   aggregateId: '00000000-0000-4000-8000-000000000201',
   eventType: 'WagerTransactionReferenceExpired',
+  correlationId: '00000000-0000-4000-8000-000000000301',
+  causationId: '00000000-0000-4000-8000-000000000401',
+  version: 1,
   payload: { transactionId: 'transaction-1', attempts: 5 },
   occurredAt: new Date('2026-11-10T00:00:00.000Z'),
   attempts: 1,
@@ -52,9 +55,12 @@ describe('OutboxSqsPublisherWorker', () => {
       MessageBody: JSON.stringify({
         eventId: pendingEvent.id,
         aggregateId: pendingEvent.aggregateId,
-        eventType: pendingEvent.eventType,
+        correlationId: pendingEvent.correlationId,
+        causationId: pendingEvent.causationId,
         occurredAt: pendingEvent.occurredAt.toISOString(),
-        payload: pendingEvent.payload,
+        version: pendingEvent.version,
+        eventType: pendingEvent.eventType,
+        data: pendingEvent.payload,
       }),
     });
     expect(markPublished).not.toHaveBeenCalled();

@@ -31,6 +31,7 @@ describe('Database migrations (PostgreSQL)', () => {
       '006-wallet-version-one',
       '007-wallet-ledger-balance-consistency',
       '008-ledger-truncate-protection',
+      '009-versioned-outbox-events',
     ]);
 
     const newWallet = (await schema.orm.em.getConnection().execute(
@@ -65,6 +66,7 @@ describe('Database migrations (PostgreSQL)', () => {
         .execute(`truncate table "${schema.name}".wallet_ledger_entries`),
     ).rejects.toThrow('wallet ledger entries are immutable');
 
+    await schema.migrateDown();
     await schema.migrateDown();
     await schema.migrateDown();
     await schema.migrateDown();
@@ -103,6 +105,7 @@ describe('Database migrations (PostgreSQL)', () => {
         '00000000-0000-4000-8000-000000000011',
       ],
     );
+    await schema.migrateDown();
     await schema.migrateDown();
     await schema.migrateDown();
     await schema.migrateDown();

@@ -22,6 +22,11 @@ import {
   type WalletTransactionContext,
   type WalletTransactionUnitOfWorkPort,
 } from '../ports/persistence.repositories.js';
+import {
+  createIntegrationEvent,
+  type IntegrationEventType,
+} from '../events/integration-event.js';
+import { RequestContext } from '../../observability/request-context.js';
 import { IdempotencyConflictError } from './idempotency-conflict.error.js';
 
 export const PENDING_REFERENCE_MAX_RETRIES = 5;
@@ -151,7 +156,7 @@ export class ProcessWagerTransactionUseCase {
               },
               occurredAt: now,
             });
-            context.outboxEvents.insert({
+            this.recordOutboxEvent(context, {
               id: randomUUID(),
               aggregateId: pending.id,
               eventType: 'WagerTransactionReferenceExpired',
@@ -471,11 +476,21 @@ export class ProcessWagerTransactionUseCase {
     event: {
       id: string;
       aggregateId: string;
-      eventType: string;
+      eventType: IntegrationEventType;
       payload: Record<string, unknown>;
       occurredAt: Date;
     },
   ): void {
-    context.outboxEvents.insert(event);
+    const causationId =
+      typeof event.payload.transactionId === 'string'
+        ? event.payload.transactionId
+        : event.aggregateId;
+    context.outboxEvents.insert(
+      createIntegrationEvent(event.eventType, {
+        ...event,
+        correlationId: RequestContext.currentCorrelationId ?? event.aggregateId,
+        causationId,
+      }),
+    );
   }
 }

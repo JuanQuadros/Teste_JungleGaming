@@ -122,7 +122,9 @@ códigos estáveis: 400 `INVALID_REQUEST`, 404 `NOT_FOUND`, 409
 202 `PROCESSING_PENDING`, 500 `PROCESSING_FAILED` terminal e 503
 `SERVICE_UNAVAILABLE` transitório. Uma rejeição de negócio inclui o código
 específico, por exemplo `INSUFFICIENT_BALANCE`; o replay conserva status, código
-e saldo observados no processamento original.
+e saldo observados no processamento original. As respostas de submissão incluem
+`idempotentReplay`: `false` para a operação original e `true` quando a chave
+persistida retorna uma operação anterior.
 
 Transações REFUND/ROLLBACK sem referência ficam em `PENDING_REFERENCE`. O
 worker consulta pendências a cada segundo e agenda até cinco novas tentativas:
@@ -167,8 +169,9 @@ andamento.
 
 Eventos persistidos na outbox são publicados em `wager-events.fifo`, com
 `MessageGroupId` por aggregate e `MessageDeduplicationId` igual ao ID do evento.
-O envelope contém `eventId`, `aggregateId`, `eventType`, `occurredAt` e
-`payload`. O publisher reserva linhas com lease persistido e `SKIP LOCKED`,
+O envelope versionado contém `eventId`, `aggregateId`, `correlationId`,
+`causationId` (quando disponível), `occurredAt`, `version`, `eventType` e
+`data`. O publisher reserva linhas com lease persistido e `SKIP LOCKED`,
 mantendo a ordem de eventos de cada aggregate; após o envio, marca o evento como
 publicado. Falhas são reagendadas com backoff exponencial até cinco minutos.
 Como o envio ao SQS e o commit no banco não podem ser atômicos, uma falha entre
@@ -178,7 +181,7 @@ também está configurada para os consumidores da fila de eventos.
 
 ## Migrations
 
-`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–008 criam e evoluem wallets, transações, ledger, inbox e outbox; protegem reversões, replay, retries de referências e imutabilidade do ledger; alinham a versão inicial da wallet em 1; e validam saldo/ledger por constraint trigger adiado no commit.
+`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–009 criam e evoluem wallets, transações, ledger, inbox e outbox; protegem reversões, replay, retries de referências e imutabilidade do ledger; alinham a versão inicial da wallet em 1; validam saldo/ledger por constraint trigger adiado no commit; e persistem versão, correlação e causação dos eventos.
 
 ## Testes e compilação
 
@@ -198,7 +201,7 @@ bun run test:e2e
 
 O comando e2e executa os arquivos em série para limitar o uso de memória. A suíte cria schemas PostgreSQL e filas FIFO únicas por execução, aplica e reverte migrations e remove somente os recursos de teste que criou. Indisponibilidade, configuração ausente ou falha nos serviços faz os testes falharem explicitamente. A cobertura inclui constraints e mapeamentos ORM, atomicidade financeira/inbox/outbox, consumo e publicação SQS reais, retries e redrive para DLQ, reinício/replay e reconstrução do saldo pelo ledger. Os testes de concorrência verificam 50 reenvios idempotentes, duas apostas de R$ 80,00 contra saldo de R$ 100,00, três consumers, recuperação após commit antes do ACK, dois publishers concorrentes e referências antecipadas de REFUND/ROLLBACK após reconexão.
 
-Na revisão final, foram registrados 38 testes e2e em 10 arquivos, 90 testes unitários em 14 arquivos, lint e build aprovados. O cenário de múltiplos consumidores executa três instâncias independentes de consumer e clientes de persistência/fila no mesmo processo de teste; não é um teste de três processos NestJS implantados separadamente. Execute novamente os comandos acima para validar o ambiente atual; essas evidências não são uma garantia de execução em outro ambiente.
+Na validação destas correções, passaram 39 testes e2e em 10 arquivos, 91 testes unitários em 14 arquivos, lint e build. O cenário de múltiplos consumidores executa três instâncias independentes de consumer e clientes de persistência/fila no mesmo processo de teste; não é um teste de três processos NestJS implantados separadamente. Execute novamente os comandos acima para validar o ambiente atual; essas evidências não são uma garantia de execução em outro ambiente.
 
 ## Documentação
 
@@ -207,4 +210,4 @@ Na revisão final, foram registrados 38 testes e2e em 10 arquivos, 90 testes uni
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` começa na versão 1 e protege moeda e saldo não negativo; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. O PostgreSQL serializa por chave idempotente e wallet e grava saldo, transação, ledger e outbox no mesmo commit. Constraints e triggers diferidos mantêm o saldo igual ao ledger em commits futuros; não corrigem divergências preexistentes, que precisam de reconciliação explícita. O consumidor SQS mantém inbox atômica, retries e DLQ; publishers usam leases e preservam ordenação por aggregate; a reconciliação compara saldo e ledger sem corrigir divergências. Autenticação de provedores não foi implementada. A outbox é at-least-once e seu envelope ainda não tem versão/correlação explícitas; consulte [ARCHITECTURE.md](ARCHITECTURE.md) para limites e trade-offs.
+`Money` usa centavos `BigInt`; `Wallet` começa na versão 1 e protege moeda e saldo não negativo; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões, inclusive ROLLBACK de REFUND. O PostgreSQL serializa por chave idempotente e wallet e grava saldo, transação, ledger e outbox no mesmo commit. Constraints e triggers diferidos mantêm o saldo igual ao ledger em commits futuros; não corrigem divergências preexistentes, que precisam de reconciliação explícita. O consumidor SQS mantém inbox atômica, retries e DLQ; publishers usam leases e preservam ordenação por aggregate; a reconciliação compara saldo e ledger sem corrigir divergências. Autenticação de provedores não foi implementada. A outbox é at-least-once; seu envelope agora é versionado e carrega correlação/causação, mas consumidores ainda precisam deduplicar `eventId`.

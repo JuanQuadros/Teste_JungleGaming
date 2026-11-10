@@ -25,7 +25,7 @@ describe('MikroORM persistence repositories (PostgreSQL)', () => {
     const migrations = result as { name: string }[];
 
     expect(migrations.map(({ name }) => name)).toContain(
-      '008-ledger-truncate-protection',
+      '009-versioned-outbox-events',
     );
   });
 

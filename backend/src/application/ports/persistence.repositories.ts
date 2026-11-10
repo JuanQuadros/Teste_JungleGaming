@@ -30,6 +30,9 @@ export interface OutboxEvent {
   id: string;
   aggregateId: string;
   eventType: string;
+  correlationId: string;
+  causationId: string | null;
+  version: number;
   payload: Record<string, unknown>;
   occurredAt: Date;
 }

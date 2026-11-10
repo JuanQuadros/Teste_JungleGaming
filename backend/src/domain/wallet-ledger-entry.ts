@@ -64,9 +64,7 @@ export class RollbackWouldCauseNegativeBalanceError extends Error {
   }
 }
 
-const VALID_DIRECTIONS = new Set<string>(
-  Object.values(WalletLedgerDirection),
-);
+const VALID_DIRECTIONS = new Set<string>(Object.values(WalletLedgerDirection));
 
 /** Lançamento financeiro imutável que registra integralmente o efeito no saldo. */
 export class WalletLedgerEntry {
@@ -130,9 +128,7 @@ export class WalletLedgerEntry {
   }
 
   /** Cria uma compensação integral sem alterar o lançamento original. */
-  static reverse(
-    input: ReverseWalletLedgerEntryInput,
-  ): WalletLedgerEntry {
+  static reverse(input: ReverseWalletLedgerEntryInput): WalletLedgerEntry {
     const {
       transaction,
       originalTransaction,
@@ -158,9 +154,7 @@ export class WalletLedgerEntry {
     );
 
     if (existingReversal) {
-      if (
-        existingReversal.reversalOfTransactionId !== originalTransaction.id
-      ) {
+      if (existingReversal.reversalOfTransactionId !== originalTransaction.id) {
         throw new InvalidWalletLedgerEntryError(
           'O lançamento existente não reverte a transação informada.',
         );
@@ -177,7 +171,8 @@ export class WalletLedgerEntry {
     } else if (
       originalTransaction.kind !== WagerTransactionType.OPENING &&
       originalTransaction.kind !== WagerTransactionType.BET &&
-      originalTransaction.kind !== WagerTransactionType.WIN
+      originalTransaction.kind !== WagerTransactionType.WIN &&
+      originalTransaction.kind !== WagerTransactionType.REFUND
     ) {
       throw new InvalidWalletLedgerEntryError(
         'ROLLBACK deve referenciar uma operação processada com efeito financeiro reversível.',
@@ -314,10 +309,16 @@ export class WalletLedgerEntry {
   ): void {
     WalletLedgerEntry.assertProcessed(originalTransaction);
 
+    const rollbackOfRefund =
+      transaction.kind === WagerTransactionType.ROLLBACK &&
+      originalTransaction.kind === WagerTransactionType.REFUND;
+    const invalidReversalLink = rollbackOfRefund
+      ? originalEntry.reversalOfTransactionId === null
+      : originalEntry.reversalOfTransactionId !== null;
     if (
       originalEntry.transactionId !== originalTransaction.id ||
       originalEntry.walletId !== originalTransaction.walletId ||
-      originalEntry.reversalOfTransactionId !== null
+      invalidReversalLink
     ) {
       throw new InvalidWalletLedgerEntryError(
         'A referência deve ser um lançamento original da transação informada.',
@@ -328,7 +329,8 @@ export class WalletLedgerEntry {
       originalTransaction.kind === WagerTransactionType.BET
         ? WalletLedgerDirection.DEBIT
         : originalTransaction.kind === WagerTransactionType.WIN ||
-            originalTransaction.kind === WagerTransactionType.OPENING
+            originalTransaction.kind === WagerTransactionType.OPENING ||
+            originalTransaction.kind === WagerTransactionType.REFUND
           ? WalletLedgerDirection.CREDIT
           : null;
     if (

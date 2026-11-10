@@ -18,16 +18,17 @@ Este serviço processa transações financeiras de apostas e mantém saldo, hist
 - **Precisão monetária:** `Money` usa centavos `BigInt`; o PostgreSQL persiste `NUMERIC(20,2)`. Testes unitários verificam formato, precisão e moedas incompatíveis.
 - **Invariantes no banco:** saldo não negativo, wallet única por jogador/moeda, identidade de transação/idempotência, lançamentos únicos e ledger imutável (incluindo bloqueio a `TRUNCATE`) têm constraints ou trigger. Wallets começam na versão 1; trigger diferido mantém saldo e soma do ledger alinhados em novos commits.
 - **Idempotência persistente:** chave e hash do payload ficam no PostgreSQL; repetição igual não repete o efeito, e a mesma chave com payload diferente é conflito.
+- **Replay HTTP explícito:** o POST responde `idempotentReplay: false` para a operação original e `true` quando retorna uma transação previamente persistida pela mesma chave.
 - **Concorrência:** lock PostgreSQL por chave e por wallet evita disputa local à instância. Testes reais cobrem 50 reenvios e duas apostas de R$ 80,00 contra saldo de R$ 100,00.
 - **Inbox/outbox:** gravações são atômicas ao commit financeiro; testes reais cobrem retry, DLQ, crash depois do commit antes do ACK e publishers concorrentes.
-- **Ledger e recuperação:** REFUND/ROLLBACK fora de ordem são reprocessados; teste reconecta o ORM e reconcilia saldo e lançamentos.
+- **Ledger e recuperação:** REFUND/ROLLBACK fora de ordem são reprocessados; ROLLBACK pode reverter um REFUND sem alterar lançamentos anteriores. Testes reconciliam saldo e ledger após a reversão.
 
-Na validação registrada para esta entrega, passaram **38 testes e2e em 10 arquivos**, **90 testes unitários em 14 arquivos**, lint e build. O teste de múltiplas instâncias usa três consumers/EntityManagers independentes no mesmo processo; não é uma orquestração de três processos NestJS distintos. São resultados observados nesta revisão; não são garantia de desempenho ou operação em produção.
+Na validação destas correções, passaram **39 testes e2e em 10 arquivos**, **91 testes unitários em 14 arquivos**, lint e build. O teste de múltiplas instâncias usa três consumers/EntityManagers independentes no mesmo processo; não é uma orquestração de três processos NestJS distintos. São resultados observados nesta revisão; não são garantia de desempenho ou operação em produção.
 
 ## O que não está garantido ou não foi implementado
 
 - Autenticação de provedores não foi implementada. O desafio permite deixar esse item de fora; para produção, integrar um provedor de identidade externo e proteger a API.
-- O envelope atual da outbox tem `eventId`, `aggregateId`, `eventType`, `occurredAt` e `payload`, mas não campos explícitos de versão, correlação ou causação nem classes de evento tipadas. Esse contrato precisa ser versionado antes de integração com consumidores externos.
+- A outbox usa eventos de integração concretos e envelope versionado com `eventId`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `version`, `eventType` e `data`. A publicação continua sendo at-least-once, então consumidores externos precisam deduplicar `eventId`.
 - Publicação não é exactly-once. Uma queda entre envio ao SQS e marcação no PostgreSQL pode gerar duplicata; consumidores devem deduplicar por `eventId`.
 - A migration de consistência não corrige divergências anteriores. Reconcilie explicitamente dados legados antes de operar wallets inconsistentes; os testes e2e usam schemas isolados e deixam os dados persistentes fora do escopo.
 - A configuração local dos testes depende de Docker, PostgreSQL, LocalStack e de um token válido para a imagem LocalStack definida no Compose.
@@ -61,7 +62,7 @@ Em outro terminal, verifique `http://localhost:3000/health/live`,
 
 ## Roteiro curto para apresentação
 
-> O desafio é manter a correção financeira com entrega at-least-once e várias instâncias. Por isso, não trato memória nem FIFO como fonte de verdade. `Money` evita ponto flutuante, e o PostgreSQL é responsável por idempotência, locks e constraints. Saldo, transação, ledger e outbox são confirmados no mesmo commit; o consumer da inbox só dá ACK depois desse commit. A outbox é publicada separadamente e pode duplicar em uma janela de falha, então consumidores devem deduplicar pelo ID do evento. Os testes usam PostgreSQL e LocalStack reais e exercitam races, redelivery e recuperação. A autenticação e um envelope de evento versionado continuam fora do escopo atual e estão documentados como limitações.
+> O desafio é manter a correção financeira com entrega at-least-once e várias instâncias. Por isso, não trato memória nem FIFO como fonte de verdade. `Money` evita ponto flutuante, e o PostgreSQL é responsável por idempotência, locks e constraints. Saldo, transação, ledger e outbox são confirmados no mesmo commit; o consumer da inbox só dá ACK depois desse commit. A outbox é publicada separadamente e pode duplicar em uma janela de falha, então consumidores deduplicam pelo ID do evento. O contrato versionado inclui correlação e causação. Os testes usam PostgreSQL e LocalStack reais e exercitam races, redelivery e recuperação. A autenticação continua fora do escopo.
 
 ## Termos
 

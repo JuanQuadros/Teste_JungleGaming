@@ -7,12 +7,7 @@ describe('mapWagerTransactionResponse', () => {
   it.each([
     [WagerTransactionStatus.PROCESSED, null, 200, 'PROCESSED'],
     [WagerTransactionStatus.PENDING, null, 202, 'PROCESSING_PENDING'],
-    [
-      WagerTransactionStatus.PENDING_REFERENCE,
-      null,
-      202,
-      'PROCESSING_PENDING',
-    ],
+    [WagerTransactionStatus.PENDING_REFERENCE, null, 202, 'PROCESSING_PENDING'],
     [
       WagerTransactionStatus.REJECTED,
       'INSUFFICIENT_BALANCE',
@@ -42,8 +37,23 @@ describe('mapWagerTransactionResponse', () => {
           status,
           code,
           balance: '12.34',
+          idempotentReplay: false,
         },
       });
     },
   );
+
+  it('marks a response returned from a persistent idempotency replay', () => {
+    expect(
+      mapWagerTransactionResponse(
+        {
+          id: 'transaction-1',
+          status: WagerTransactionStatus.PROCESSED,
+          failureCode: null,
+          responseBalance: null,
+        },
+        true,
+      ).body.idempotentReplay,
+    ).toBe(true);
+  });
 });

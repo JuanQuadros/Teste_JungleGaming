@@ -48,6 +48,10 @@ import {
   name as ledgerTruncateProtectionName,
   up as ledgerTruncateProtectionUp,
 } from '../../migrations/008-ledger-truncate-protection.js';
+import {
+  name as versionedOutboxEventsName,
+  up as versionedOutboxEventsUp,
+} from '../../migrations/009-versioned-outbox-events.js';
 
 const migrations = [
   { name: initialName, up: initialUp },
@@ -58,6 +62,7 @@ const migrations = [
   { name: walletVersionOneName, up: walletVersionOneUp },
   { name: walletLedgerBalanceName, up: walletLedgerBalanceUp },
   { name: ledgerTruncateProtectionName, up: ledgerTruncateProtectionUp },
+  { name: versionedOutboxEventsName, up: versionedOutboxEventsUp },
 ];
 
 describe('Wager idempotency (PostgreSQL)', () => {

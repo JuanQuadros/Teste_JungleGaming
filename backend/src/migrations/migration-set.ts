@@ -38,6 +38,11 @@ import {
   name as ledgerTruncateProtectionName,
   up as ledgerTruncateProtectionUp,
 } from './008-ledger-truncate-protection.js';
+import {
+  down as versionedOutboxEventsDown,
+  name as versionedOutboxEventsName,
+  up as versionedOutboxEventsUp,
+} from './009-versioned-outbox-events.js';
 
 export const migrations = [
   { name: initialName, up: initialUp, down: initialDown },
@@ -75,5 +80,10 @@ export const migrations = [
     name: ledgerTruncateProtectionName,
     up: ledgerTruncateProtectionUp,
     down: ledgerTruncateProtectionDown,
+  },
+  {
+    name: versionedOutboxEventsName,
+    up: versionedOutboxEventsUp,
+    down: versionedOutboxEventsDown,
   },
 ];

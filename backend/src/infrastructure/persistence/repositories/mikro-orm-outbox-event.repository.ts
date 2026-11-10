@@ -17,6 +17,9 @@ export class MikroOrmOutboxEventRepository implements OutboxEventRepositoryPort 
       id: event.id,
       aggregateId: event.aggregateId,
       eventType: event.eventType,
+      correlationId: event.correlationId,
+      causationId: event.causationId,
+      version: event.version,
       payload: event.payload,
       occurredAt: event.occurredAt,
       attempts: 0,
@@ -63,8 +66,9 @@ export class MikroOrmOutboxEventRepository implements OutboxEventRepositoryPort 
             next_attempt_at = ?
         from due_events
         where event.id = due_events.id
-        returning event.id, event.aggregate_id, event.event_type, event.payload,
-                  event.occurred_at, event.attempts`,
+        returning event.id, event.aggregate_id, event.event_type,
+                  event.correlation_id, event.causation_id, event.event_version,
+                  event.payload, event.occurred_at, event.attempts`,
         [now, limit, leaseUntil],
         'all',
         em.getTransactionContext(),
@@ -73,6 +77,9 @@ export class MikroOrmOutboxEventRepository implements OutboxEventRepositoryPort 
         id: string;
         aggregate_id: string;
         event_type: string;
+        correlation_id: string;
+        causation_id: string | null;
+        event_version: number;
         payload: Record<string, unknown>;
         occurred_at: Date | string;
         attempts: number;
@@ -81,6 +88,9 @@ export class MikroOrmOutboxEventRepository implements OutboxEventRepositoryPort 
         id: row.id,
         aggregateId: row.aggregate_id,
         eventType: row.event_type,
+        correlationId: row.correlation_id,
+        causationId: row.causation_id,
+        version: row.event_version,
         payload: row.payload,
         occurredAt: new Date(row.occurred_at),
         attempts: row.attempts,

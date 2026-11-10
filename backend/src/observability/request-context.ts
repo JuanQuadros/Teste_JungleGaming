@@ -7,13 +7,18 @@ interface RequestContextStore {
 
 @Injectable()
 export class RequestContext {
-  private static readonly storage = new AsyncLocalStorage<RequestContextStore>();
+  private static readonly storage =
+    new AsyncLocalStorage<RequestContextStore>();
 
   run<T>(correlationId: string, callback: () => T): T {
     return RequestContext.storage.run({ correlationId }, callback);
   }
 
   get correlationId(): string | undefined {
+    return RequestContext.storage.getStore()?.correlationId;
+  }
+
+  static get currentCorrelationId(): string | undefined {
     return RequestContext.storage.getStore()?.correlationId;
   }
 }

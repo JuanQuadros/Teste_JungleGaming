@@ -12,6 +12,15 @@ export class OutboxMessageEntity {
   @Property({ type: 'text', fieldName: 'event_type' })
   eventType!: string;
 
+  @Property({ type: 'text', fieldName: 'correlation_id' })
+  correlationId!: string;
+
+  @Property({ type: 'text', fieldName: 'causation_id', nullable: true })
+  causationId: string | null = null;
+
+  @Property({ type: 'integer', fieldName: 'event_version', default: 1 })
+  version = 1;
+
   @Property({ type: 'json', columnType: 'jsonb' })
   payload!: Record<string, unknown>;
 

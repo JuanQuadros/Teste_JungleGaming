@@ -15,12 +15,14 @@ export interface WagerTransactionHttpResponse {
     status: WagerTransactionStatus;
     code: string;
     balance: string | null;
+    idempotentReplay: boolean;
   };
 }
 
 /** Mapeia o resultado de domínio para códigos HTTP sem depender de mensagens. */
 export function mapWagerTransactionResponse(
   transaction: WagerTransactionResult,
+  idempotentReplay = false,
 ): WagerTransactionHttpResponse {
   switch (transaction.status) {
     case WagerTransactionStatus.PROCESSED:
@@ -31,6 +33,7 @@ export function mapWagerTransactionResponse(
           status: transaction.status,
           code: 'PROCESSED',
           balance: transaction.responseBalance?.toJSON().amount ?? null,
+          idempotentReplay,
         },
       };
     case WagerTransactionStatus.PENDING:
@@ -42,6 +45,7 @@ export function mapWagerTransactionResponse(
           status: transaction.status,
           code: 'PROCESSING_PENDING',
           balance: transaction.responseBalance?.toJSON().amount ?? null,
+          idempotentReplay,
         },
       };
     case WagerTransactionStatus.REJECTED:
@@ -52,6 +56,7 @@ export function mapWagerTransactionResponse(
           status: transaction.status,
           code: transaction.failureCode ?? 'WAGER_REJECTED',
           balance: transaction.responseBalance?.toJSON().amount ?? null,
+          idempotentReplay,
         },
       };
     case WagerTransactionStatus.FAILED:
@@ -62,6 +67,7 @@ export function mapWagerTransactionResponse(
           status: transaction.status,
           code: 'PROCESSING_FAILED',
           balance: transaction.responseBalance?.toJSON().amount ?? null,
+          idempotentReplay,
         },
       };
   }

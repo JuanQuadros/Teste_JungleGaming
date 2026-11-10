@@ -97,6 +97,9 @@ describe('PostgreSQL and LocalStack integration', () => {
       id: randomUUID(),
       aggregateId: randomUUID(),
       eventType: 'IntegrationEvent',
+      correlationId: randomUUID(),
+      causationId: randomUUID(),
+      version: 1,
       payload: { value: 'persisted' },
       occurredAt: new Date(),
     };
@@ -118,9 +121,12 @@ describe('PostgreSQL and LocalStack integration', () => {
       expect(JSON.parse(message.Body ?? 'null')).toEqual({
         eventId: event.id,
         aggregateId: event.aggregateId,
-        eventType: event.eventType,
+        correlationId: event.correlationId,
+        causationId: event.causationId,
         occurredAt: event.occurredAt.toISOString(),
-        payload: event.payload,
+        version: event.version,
+        eventType: event.eventType,
+        data: event.payload,
       });
       await waitFor(async () => {
         const rows = (await schema.orm.em

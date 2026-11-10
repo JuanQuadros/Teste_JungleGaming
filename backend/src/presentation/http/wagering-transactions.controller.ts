@@ -39,8 +39,14 @@ export class WageringTransactionsController {
     @IdempotencyKey(IdempotencyKeyPipe) idempotencyKey: string,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.submitTransaction.execute(body, idempotencyKey);
-    const mapped = mapWagerTransactionResponse(result);
+    const result = await this.submitTransaction.executeWithReplayInfo(
+      body,
+      idempotencyKey,
+    );
+    const mapped = mapWagerTransactionResponse(
+      result.transaction,
+      result.idempotentReplay,
+    );
     response.status(mapped.statusCode);
     return mapped.body;
   }

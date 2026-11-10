@@ -338,6 +338,9 @@ describe('Concurrency and recovery (PostgreSQL and LocalStack)', () => {
       id: randomUUID(),
       aggregateId: randomUUID(),
       eventType: 'PublisherConcurrencyTest',
+      correlationId: randomUUID(),
+      causationId: null,
+      version: 1,
       payload: { index },
       occurredAt: new Date(Date.now() - 1_000),
     }));

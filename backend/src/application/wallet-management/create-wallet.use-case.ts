@@ -12,6 +12,8 @@ import {
   type OutboxEvent,
   type WalletCreationUnitOfWorkPort,
 } from '../ports/persistence.repositories.js';
+import { createIntegrationEvent } from '../events/integration-event.js';
+import { RequestContext } from '../../observability/request-context.js';
 
 export interface CreateWalletInput {
   playerId: string;
@@ -69,11 +71,16 @@ export class CreateWalletUseCase {
         transaction: openingTransaction,
         balanceBefore: Money.zero(input.currency),
       });
+      const eventContext = {
+        correlationId:
+          RequestContext.currentCorrelationId ?? openingTransaction.id,
+        causationId: openingTransaction.id,
+      };
       outboxEvents.push(
-        {
+        createIntegrationEvent('WagerTransactionProcessed', {
           id: randomUUID(),
           aggregateId: openingTransaction.id,
-          eventType: 'WagerTransactionProcessed',
+          ...eventContext,
           payload: {
             transactionId: openingTransaction.id,
             providerId: openingTransaction.providerId,
@@ -84,11 +91,11 @@ export class CreateWalletUseCase {
             balance: wallet.balance.toJSON().amount,
           },
           occurredAt: new Date(),
-        },
-        {
+        }),
+        createIntegrationEvent('WalletBalanceChanged', {
           id: randomUUID(),
           aggregateId: wallet.id,
-          eventType: 'WalletBalanceChanged',
+          ...eventContext,
           payload: {
             walletId: wallet.id,
             transactionId: openingTransaction.id,
@@ -97,7 +104,7 @@ export class CreateWalletUseCase {
             balanceAfter: wallet.balance.toJSON().amount,
           },
           occurredAt: new Date(),
-        },
+        }),
       );
     }
 
