@@ -1,6 +1,6 @@
 # Jungle Gaming — Processador Distribuído de Apostas
 
-Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura, domínio e repositórios MikroORM estão preparados; o processamento financeiro ocorre em transação SQL com lock por wallet e idempotência persistente. A API e os workers ainda aguardam integração.
+Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura, o domínio, os repositórios MikroORM e os endpoints HTTP mínimos estão implementados; o processamento financeiro ocorre em transação SQL com lock por wallet e idempotência persistente. Os workers ainda aguardam integração.
 
 ## Tecnologias
 
@@ -76,18 +76,32 @@ caso contrário, a aplicação gera um UUID e devolve o identificador na respost
 O endpoint `GET /metrics` expõe métricas Prometheus para requisições HTTP,
 latência e verificações de dependências do readiness.
 
-A camada de apresentação também fornece validação para o payload de transação
-e para o header `Idempotency-Key`. O payload aceita somente BET, WIN, LOSS,
-REFUND ou ROLLBACK; valores são strings decimais positivas, moeda é ISO 4217,
-e REFUND/ROLLBACK exigem referência. O controller deve aplicar
-`WagerTransactionRequestPipe` em `@Body()` e `IdempotencyKeyPipe` pelo decorator
-`@IdempotencyKey()` antes de chamar o caso de uso.
+A API HTTP inclui:
+
+- `POST /wallets`: cria uma wallet; `playerId` é UUID, `currency` é ISO 4217 e
+  `initialBalance` é opcional (padrão `"0.00"`). Saldo inicial positivo grava
+  uma operação interna `OPENING` e um crédito no ledger na mesma transação SQL.
+- `GET /wallets/:walletId`: consulta saldo e versão.
+- `GET /wallets/:walletId/ledger?limit=50&cursor=...`: lista lançamentos com
+  cursor opaco estável; `limit` aceita de 1 a 100.
+- `POST /wagering/transactions`: submete BET, WIN, LOSS, REFUND ou ROLLBACK com
+  `Idempotency-Key`.
+- `GET /wagering/transactions/:transactionId` e
+  `GET /wagering/transactions/by-external?providerId=...&externalTransactionId=...`:
+  consultam uma operação pelas identidades interna ou externa.
+
+O payload de transação usa valores monetários como strings decimais positivas,
+moeda ISO 4217 e IDs UUID para wallet/jogador; REFUND/ROLLBACK exigem uma única
+referência. `OPENING` não pode ser submetido por provedores. A criação duplicada
+de wallet para jogador/moeda retorna 409 `WALLET_ALREADY_EXISTS`. A API ainda
+não autentica provedores; a inclusão de autenticação deve ser feita por guard
+ou middleware sem alterar os contratos de domínio.
 
 Erros HTTP usam `{ error: { code, message, details? }, correlationId? }`, com
-códigos estáveis: 400 `INVALID_REQUEST`, 409 `IDEMPOTENCY_CONFLICT`, 422 para
-rejeições de negócio, 202 `PROCESSING_PENDING`, 500 `PROCESSING_FAILED` terminal
-e 503 `SERVICE_UNAVAILABLE` transitório. O mapeador de resultado de domínio
-está preparado para ser usado pelos endpoints de transação.
+códigos estáveis: 400 `INVALID_REQUEST`, 404 `NOT_FOUND`, 409
+`IDEMPOTENCY_CONFLICT` ou `WALLET_ALREADY_EXISTS`, 422 para rejeições de negócio,
+202 `PROCESSING_PENDING`, 500 `PROCESSING_FAILED` terminal e 503
+`SERVICE_UNAVAILABLE` transitório.
 
 ## Migrations
 
@@ -109,7 +123,7 @@ bun run db:migrate
 bun run test:e2e
 ```
 
-Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. A idempotência é validada com PostgreSQL real para chamadas concorrentes e sequenciais, replay do saldo original após operações posteriores e reinicialização, conflito de payload sem efeitos financeiros adicionais.
+Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam a idempotência e os endpoints HTTP, incluindo abertura de wallet e ledger atômicos, replays, consultas e paginação por cursor.
 
 ## Documentação
 
@@ -117,4 +131,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas e o saldo registrado na resposta original; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam BET, WIN, LOSS, REFUND e ROLLBACK em transação SQL, com lock por wallet, hash SHA-256 do payload de negócio, replay idêntico que preserva a resposta financeira original e conflito para reutilização da chave com dados diferentes. A validação e o mapeamento de erros da API aguardam integração aos endpoints. Outbox e processamento SQS ainda serão conectados aos casos de uso.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas e o saldo registrado na resposta original; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints de wallets, ledger e transações. Autenticação, outbox e processamento SQS ainda serão conectados.

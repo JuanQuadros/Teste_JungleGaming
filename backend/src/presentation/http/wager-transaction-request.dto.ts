@@ -49,6 +49,9 @@ const EXTERNAL_TRANSACTION_TYPES = new Set<string>([
   WagerTransactionType.ROLLBACK,
 ]);
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export class InvalidWagerRequestError extends Error {
   constructor(readonly issues: readonly RequestValidationIssue[]) {
     super('A solicitação da transação contém campos inválidos.');
@@ -81,6 +84,11 @@ export function parseWagerTransactionRequest(
       fieldValue.length > 256
     ) {
       issues.push({ field, code: 'NON_EMPTY_STRING_REQUIRED' });
+    }
+  }
+  for (const field of ['walletId', 'playerId'] as const) {
+    if (typeof body[field] === 'string' && !UUID_PATTERN.test(body[field])) {
+      issues.push({ field, code: 'INVALID_UUID' });
     }
   }
 
@@ -144,6 +152,18 @@ export function parseWagerTransactionRequest(
     typeof body.referenceTransactionId !== 'string'
   ) {
     issues.push({ field: 'reference', code: 'REFERENCE_REQUIRED' });
+  }
+  if (
+    typeof body.referenceExternalTransactionId === 'string' &&
+    typeof body.referenceTransactionId === 'string'
+  ) {
+    issues.push({ field: 'reference', code: 'REFERENCE_MUST_BE_UNAMBIGUOUS' });
+  }
+  if (
+    typeof body.referenceTransactionId === 'string' &&
+    !UUID_PATTERN.test(body.referenceTransactionId)
+  ) {
+    issues.push({ field: 'referenceTransactionId', code: 'INVALID_UUID' });
   }
 
   if (issues.length > 0 || !amount) {

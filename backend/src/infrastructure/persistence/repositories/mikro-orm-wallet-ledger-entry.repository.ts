@@ -6,6 +6,10 @@ import {
   WalletLedgerEntry,
 } from '../../../domain/wallet-ledger-entry.js';
 import type { WalletLedgerEntryRepositoryPort } from '../../../application/ports/persistence.repositories.js';
+import type {
+  WalletLedgerCursor,
+  WalletLedgerPageItem,
+} from '../../../application/ports/persistence.repositories.js';
 import { WalletLedgerEntryEntity } from '../entities/wallet-ledger-entry.entity.js';
 
 /** Persiste e consulta lançamentos sem expor métodos de alteração ou remoção. */
@@ -31,6 +35,79 @@ export class MikroOrmWalletLedgerEntryRepository implements WalletLedgerEntryRep
       reversalOfTransactionId: originalTransactionId,
     });
     return entity ? this.toDomain(entity) : null;
+  }
+
+  async findPageByWallet(
+    walletId: string,
+    cursor: WalletLedgerCursor | null,
+    limit: number,
+  ): Promise<{ items: WalletLedgerPageItem[]; hasMore: boolean }> {
+    const cursorClause = cursor
+      ? "and (date_trunc('milliseconds', created_at), id) < (?::timestamptz, ?::uuid)"
+      : '';
+    const parameters = cursor
+      ? [walletId, cursor.createdAt, cursor.id, limit + 1]
+      : [walletId, limit + 1];
+    const schema = this.entityManager.config.getSchema() ?? 'public';
+    const ledgerTable = `"${schema.replaceAll('"', '""')}".wallet_ledger_entries`;
+    const result = await this.entityManager.getConnection().execute(
+      `select
+        id,
+        wallet_id as "walletId",
+        transaction_id as "transactionId",
+        direction,
+        amount::text as amount,
+        currency,
+        balance_before::text as "balanceBefore",
+        balance_after::text as "balanceAfter",
+        reversal_of_transaction_id as "reversalOfTransactionId",
+        to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt",
+        to_char(date_trunc('milliseconds', created_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "cursorAt"
+      from ${ledgerTable}
+      where wallet_id = ? ${cursorClause}
+      order by date_trunc('milliseconds', created_at) desc, id desc
+      limit ?`,
+      parameters,
+    );
+    const rows = result as Array<
+      Pick<
+        WalletLedgerEntryEntity,
+        | 'id'
+        | 'walletId'
+        | 'transactionId'
+        | 'direction'
+        | 'amount'
+        | 'currency'
+        | 'balanceBefore'
+        | 'balanceAfter'
+        | 'reversalOfTransactionId'
+      > & { createdAt: string; cursorAt: string }
+    >;
+    const hasMore = rows.length > limit;
+    return {
+      items: rows.slice(0, limit).map((row) => ({
+        entry: WalletLedgerEntry.create({
+          id: row.id,
+          walletId: row.walletId,
+          transactionId: row.transactionId,
+          direction: row.direction as WalletLedgerDirection,
+          amount: Money.from({ amount: row.amount, currency: row.currency }),
+          currency: row.currency,
+          balanceBefore: Money.from({
+            amount: row.balanceBefore,
+            currency: row.currency,
+          }),
+          balanceAfter: Money.from({
+            amount: row.balanceAfter,
+            currency: row.currency,
+          }),
+          reversalOfTransactionId: row.reversalOfTransactionId,
+        }),
+        createdAt: row.createdAt,
+        cursorAt: row.cursorAt,
+      })),
+      hasMore,
+    };
   }
 
   /** Agenda somente uma inclusão; alterações e exclusões não fazem parte do contrato. */

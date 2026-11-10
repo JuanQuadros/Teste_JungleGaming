@@ -16,10 +16,7 @@ import {
   IdempotencyConflictError,
   TransientInfrastructureError,
 } from './http-api-error.js';
-import {
-  IdempotencyKey,
-  IdempotencyKeyPipe,
-} from './idempotency-key.pipe.js';
+import { IdempotencyKey, IdempotencyKeyPipe } from './idempotency-key.pipe.js';
 import { InvalidWagerRequestError } from './wager-transaction-request.dto.js';
 import { WagerTransactionRequestPipe } from './wager-transaction-request.pipe.js';
 
@@ -87,8 +84,8 @@ describe('Wager HTTP contracts', () => {
       .send({
         providerId: 'provider-1',
         externalTransactionId: 'external-1',
-        walletId: 'wallet-1',
-        playerId: 'player-1',
+        walletId: '00000000-0000-4000-8000-000000000001',
+        playerId: '00000000-0000-4000-8000-000000000002',
         roundId: 'round-1',
         gameId: 'game-1',
         kind: 'BET',
@@ -101,8 +98,8 @@ describe('Wager HTTP contracts', () => {
       body: {
         providerId: 'provider-1',
         externalTransactionId: 'external-1',
-        walletId: 'wallet-1',
-        playerId: 'player-1',
+        walletId: '00000000-0000-4000-8000-000000000001',
+        playerId: '00000000-0000-4000-8000-000000000002',
         roundId: 'round-1',
         gameId: 'game-1',
         kind: 'BET',
@@ -114,21 +111,9 @@ describe('Wager HTTP contracts', () => {
   });
 
   it.each([
-    [
-      { kind: 'OPENING' },
-      'request-123',
-      'UNSUPPORTED_TRANSACTION_TYPE',
-    ],
-    [
-      { kind: 'REFUND' },
-      'request-123',
-      'REFERENCE_REQUIRED',
-    ],
-    [
-      { kind: 'BET', amount: 10 },
-      'request-123',
-      'DECIMAL_STRING_REQUIRED',
-    ],
+    [{ kind: 'OPENING' }, 'request-123', 'UNSUPPORTED_TRANSACTION_TYPE'],
+    [{ kind: 'REFUND' }, 'request-123', 'REFERENCE_REQUIRED'],
+    [{ kind: 'BET', amount: 10 }, 'request-123', 'DECIMAL_STRING_REQUIRED'],
     [{ kind: 'BET' }, '', 'INVALID_IDEMPOTENCY_KEY'],
     [{ kind: 'BET', extra: true }, 'request-123', 'UNKNOWN_FIELD'],
   ])(
@@ -137,8 +122,8 @@ describe('Wager HTTP contracts', () => {
       const body = {
         providerId: 'provider-1',
         externalTransactionId: 'external-1',
-        walletId: 'wallet-1',
-        playerId: 'player-1',
+        walletId: '00000000-0000-4000-8000-000000000001',
+        playerId: '00000000-0000-4000-8000-000000000002',
         roundId: 'round-1',
         gameId: 'game-1',
         kind: 'BET',

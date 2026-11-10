@@ -17,6 +17,9 @@ import { MetricsService } from './observability/metrics.service.js';
 import { RequestContext } from './observability/request-context.js';
 import { StructuredLogger } from './observability/structured-logger.js';
 import { ProcessWagerTransactionUseCase } from './application/wager-processing/process-wager-transaction.use-case.js';
+import { CreateWalletUseCase } from './application/wallet-management/create-wallet.use-case.js';
+import { WalletsController } from './presentation/http/wallets.controller.js';
+import { WageringTransactionsController } from './presentation/http/wagering-transactions.controller.js';
 
 // Compartilha o cliente AWS e permite apontá-lo ao LocalStack no ambiente local.
 const sqsClientProvider = {
@@ -38,10 +41,17 @@ const sqsClientProvider = {
 @Module({
   // Registra uma conexão compartilhada com o banco para injeção nos provedores do NestJS.
   imports: [MikroOrmModule.forRoot(mikroOrmConfig), PersistenceModule],
-  controllers: [AppController, HealthController, MetricsController],
+  controllers: [
+    AppController,
+    HealthController,
+    MetricsController,
+    WalletsController,
+    WageringTransactionsController,
+  ],
   providers: [
     AppService,
     ProcessWagerTransactionUseCase,
+    CreateWalletUseCase,
     sqsClientProvider,
     RequestContext,
     MetricsService,

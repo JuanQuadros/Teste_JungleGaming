@@ -20,6 +20,22 @@ export const WALLET_TRANSACTION_UNIT_OF_WORK = Symbol(
   'WALLET_TRANSACTION_UNIT_OF_WORK',
 );
 
+/** Token para criação transacional de wallet e seu lançamento inicial. */
+export const WALLET_CREATION_UNIT_OF_WORK = Symbol(
+  'WALLET_CREATION_UNIT_OF_WORK',
+);
+
+export interface WalletLedgerCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface WalletLedgerPageItem {
+  entry: WalletLedgerEntry;
+  createdAt: string;
+  cursorAt: string;
+}
+
 /** Contrato de persistência usado pela aplicação para localizar e guardar wallets. */
 export interface WalletRepositoryPort {
   findById(id: string): Promise<Wallet | null>;
@@ -49,7 +65,21 @@ export interface WalletLedgerEntryRepositoryPort {
   findReversalByTransactionId(
     originalTransactionId: string,
   ): Promise<WalletLedgerEntry | null>;
+  findPageByWallet(
+    walletId: string,
+    cursor: WalletLedgerCursor | null,
+    limit: number,
+  ): Promise<{ items: WalletLedgerPageItem[]; hasMore: boolean }>;
   insert(entry: WalletLedgerEntry): void;
+}
+
+/** Persiste wallet e eventual abertura no mesmo commit SQL. */
+export interface WalletCreationUnitOfWorkPort {
+  create(
+    wallet: Wallet,
+    openingTransaction: WagerTransaction | null,
+    openingEntry: WalletLedgerEntry | null,
+  ): Promise<void>;
 }
 
 /** Repositórios e wallet carregados dentro da mesma transação SQL. */

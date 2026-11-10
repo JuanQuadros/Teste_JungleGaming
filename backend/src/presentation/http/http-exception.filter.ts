@@ -6,9 +6,7 @@ import {
   type ExceptionFilter,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import {
-  InvalidMoneyError,
-} from '../../domain/money.js';
+import { InvalidMoneyError } from '../../domain/money.js';
 import { InvalidWagerTransactionError } from '../../domain/wager-transaction.js';
 import { RequestContext } from '../../observability/request-context.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
@@ -17,6 +15,7 @@ import {
   TransientInfrastructureError,
 } from './http-api-error.js';
 import { InvalidWagerRequestError } from './wager-transaction-request.dto.js';
+import { WalletAlreadyExistsError } from '../../application/wallet-management/wallet-already-exists.error.js';
 
 interface ApiErrorResponse {
   error: {
@@ -88,6 +87,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         message: 'A chave de idempotência foi reutilizada com outros dados.',
       };
     }
+    if (exception instanceof WalletAlreadyExistsError) {
+      return {
+        statusCode: 409,
+        code: 'WALLET_ALREADY_EXISTS',
+        message: 'Já existe uma wallet para este jogador e moeda.',
+      };
+    }
     if (exception instanceof TransientInfrastructureError) {
       return {
         statusCode: 503,
@@ -145,8 +151,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
     if (statusCode === 400) return 'A solicitação contém campos inválidos.';
     if (statusCode === 404) return 'O recurso solicitado não foi encontrado.';
     if (statusCode === 409) return 'A solicitação conflita com o estado atual.';
-    if (statusCode === 422) return 'A operação foi rejeitada pelas regras de negócio.';
-    if (statusCode === 503) return 'O serviço está temporariamente indisponível.';
+    if (statusCode === 422)
+      return 'A operação foi rejeitada pelas regras de negócio.';
+    if (statusCode === 503)
+      return 'O serviço está temporariamente indisponível.';
     if (statusCode >= 500) return 'Ocorreu um erro interno.';
     return 'A solicitação não pode ser processada.';
   }

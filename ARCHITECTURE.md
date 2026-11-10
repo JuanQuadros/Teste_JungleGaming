@@ -2,7 +2,7 @@
 
 ## Estado e escopo
 
-Este documento registra as decisões que orientam a implementação do desafio. A infraestrutura, os componentes de domínio, entidades e repositórios existem. O processamento financeiro e a idempotência persistente já usam uma transação SQL com lock por wallet; a API e os workers ainda aguardam integração.
+Este documento registra as decisões que orientam a implementação do desafio. A infraestrutura, os componentes de domínio, entidades, repositórios, processamento financeiro e endpoints HTTP mínimos estão implementados. A API e o processamento financeiro usam transações SQL com lock por wallet; os workers ainda aguardam integração.
 
 O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira.
 
@@ -20,9 +20,31 @@ O objetivo é processar operações de apostas de múltiplos provedores com entr
 As dependências devem apontar para dentro, em direção ao domínio:
 
 1. **Domínio:** `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` existem sem dependência de NestJS, MikroORM, SQS ou tipos monetários do banco.
-2. **Aplicação:** portas de repositório definem como localizar e persistir os aggregates; casos de uso coordenam validação, transação financeira e idempotência. Publicação de eventos e consultas ainda serão integradas.
+2. **Aplicação:** portas de repositório definem como localizar e persistir os aggregates; casos de uso coordenam validação, transação financeira, idempotência e criação de wallet. Publicação de eventos ainda será integrada.
 3. **Infraestrutura:** entidades MikroORM mapeiam as tabelas financeiras, inbox e outbox. Repositórios MikroORM convertem as entidades para o domínio; transações PostgreSQL e migrations dão suporte ao processamento financeiro. Workers SQS e observabilidade de negócio ainda serão implementados.
-4. **Apresentação:** controllers HTTP, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
+4. **Apresentação:** controllers HTTP para wallets, ledger e transações, DTOs, validação de entrada e mapeamento consistente de respostas e erros.
+
+## API HTTP
+
+O marco 12 expõe `POST /wallets`, `GET /wallets/:walletId`,
+`GET /wallets/:walletId/ledger`, `POST /wagering/transactions`,
+`GET /wagering/transactions/:transactionId` e a consulta por
+`providerId` + `externalTransactionId` em
+`GET /wagering/transactions/by-external`. Os controllers recebem e devolvem
+contratos HTTP explícitos; entidades MikroORM não são expostas.
+
+Wallets novas começam com saldo zero. Quando `initialBalance` é positivo, a
+criação da wallet, a transação interna `OPENING` e o lançamento de crédito são
+persistidos na mesma transação SQL. A unicidade de `(playerId, currency)` é
+mantida no banco e conflitos são retornados como 409 `WALLET_ALREADY_EXISTS`.
+O histórico do ledger usa ordenação estável por timestamp truncado a
+milissegundos e UUID, com cursor opaco Base64URL e limite configurável entre 1
+e 100.
+
+A submissão de transações exige `Idempotency-Key`; o pipe valida a chave e o
+payload antes do caso de uso financeiro. `OPENING` permanece interno. A API
+ainda não autentica provedores; guards ou middleware são o ponto de extensão
+para autenticação sem acoplar credenciais ao domínio.
 
 O domínio não deve conhecer detalhes de transporte ou persistência. A aplicação coordena portas; a infraestrutura implementa essas portas.
 
@@ -57,7 +79,7 @@ Migration 004 adiciona `response_balance` como valor monetário não negativo e 
 
 ## Referências e transições fora de ordem
 
-BET, WIN, LOSS, REFUND e ROLLBACK são tratados pelo caso de uso financeiro; a entrada HTTP e o consumidor SQS ainda serão integrados a ele. REFUND e ROLLBACK exigem referência válida do mesmo provedor, jogador, wallet, moeda e rodada. Referência ainda ausente produz `PENDING_REFERENCE`, sem movimento de saldo, para reprocessamento com backoff e limite documentado.
+BET, WIN, LOSS, REFUND e ROLLBACK são tratados pelo caso de uso financeiro, já integrado à entrada HTTP; o consumidor SQS ainda será integrado. REFUND e ROLLBACK exigem referência válida do mesmo provedor, jogador, wallet, moeda e rodada. Referência ainda ausente produz `PENDING_REFERENCE`, sem movimento de saldo, para reprocessamento com backoff e limite documentado.
 
 `WagerTransaction` começa em `PENDING` e pode aguardar referência, voltar ao processamento ou encerrar como `PROCESSED`, `REJECTED` ou `FAILED`. Estados terminais não aceitam novas transições. A reidratação valida e restaura o estado persistido diretamente, sem repetir o histórico de transições. Rejeições possuem códigos estáveis para saldo insuficiente, referência inválida e reversão que causaria saldo negativo; falhas técnicas usam `PROCESSING_FAILED`. `OPENING` existe no modelo persistido, mas a factory de entrada externa exclui esse tipo: sua criação fica reservada ao código interno. As interfaces HTTP e SQS ainda deverão respeitar essa separação.
 
@@ -91,7 +113,7 @@ A migration `001-initial-structure` cria a estrutura inicial de wallets, transa�
 
 Logs HTTP estruturados em JSON incluem `correlationId`, método, rota normalizada, status e duração, sem registrar payloads ou valores financeiros. O cabeçalho `X-Correlation-Id` é validado e propagado na resposta; valores inválidos são substituídos por UUID. `GET /metrics` expõe métricas Prometheus: `http_server_requests_total` (contador por método, rota e status), `http_server_request_duration_seconds` (histograma em segundos) e `health_dependency_checks_total` (contador por dependência e resultado). Métricas de transações por status, duplicatas, retries, mensagens na DLQ, conflitos de lock e atraso da outbox ainda dependem da implementação dos respectivos fluxos e devem ser instrumentadas neles.
 
-Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry` e da infraestrutura de métricas/correlação cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos, regras de reversão e exposição de métricas. Testes de integração com PostgreSQL validam leitura, escrita e reidratação dos repositórios e exigem migrations aplicadas. Testes PostgreSQL de idempotência cobrem concorrência, replay com preservação do saldo original, conflito sem efeitos adicionais e reinicialização do ORM. Ainda serão necessários testes de atomicidade financeira, redelivery, falhas após commit e publishers concorrentes. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
+Os testes unitários de `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry` e da infraestrutura de métricas/correlação cobrem precisão monetária, invariantes de saldo e versionamento, transições de estado, terminalidade, reidratação, aritmética dos lançamentos, regras de reversão e exposição de métricas. Testes com PostgreSQL validam repositórios, concorrência e endpoints HTTP, incluindo abertura atômica com `OPENING`, replays, consultas de transação e paginação do ledger. Ainda serão necessários testes de redelivery, falhas após commit e publishers concorrentes. O invariante final é `wallet.balance == saldo reconstruído pelo ledger`.
 
 ## Decisões ainda revisáveis
 

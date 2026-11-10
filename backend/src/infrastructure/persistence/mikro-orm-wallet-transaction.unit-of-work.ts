@@ -1,10 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { LockMode } from '@mikro-orm/core';
+import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
 import type {
+  WalletCreationUnitOfWorkPort,
   WalletTransactionContext,
   WalletTransactionUnitOfWorkPort,
 } from '../../application/ports/persistence.repositories.js';
+import { WalletAlreadyExistsError } from '../../application/wallet-management/wallet-already-exists.error.js';
+import type { Wallet } from '../../domain/wallet.js';
+import type { WagerTransaction } from '../../domain/wager-transaction.js';
+import type { WalletLedgerEntry } from '../../domain/wallet-ledger-entry.js';
 import { WalletEntity } from './entities/wallet.entity.js';
 import {
   MikroOrmWalletLedgerEntryRepository,
@@ -15,8 +20,42 @@ import { PersistenceRecordNotFoundError } from './repositories/persistence-recor
 
 /** Abre a transação e serializa por chave antes de bloquear a wallet. */
 @Injectable()
-export class MikroOrmWalletTransactionUnitOfWork implements WalletTransactionUnitOfWorkPort {
+export class MikroOrmWalletTransactionUnitOfWork
+  implements WalletTransactionUnitOfWorkPort, WalletCreationUnitOfWorkPort
+{
   constructor(private readonly entityManager: EntityManager) {}
+
+  async create(
+    wallet: Wallet,
+    openingTransaction: WagerTransaction | null,
+    openingEntry: WalletLedgerEntry | null,
+  ): Promise<void> {
+    try {
+      await this.entityManager.transactional(async (em) => {
+        new MikroOrmWalletRepository(em).insert(wallet);
+        await em.flush();
+        if (openingTransaction) {
+          new MikroOrmWagerTransactionRepository(em).insert(openingTransaction);
+          await em.flush();
+        }
+        if (openingEntry) {
+          new MikroOrmWalletLedgerEntryRepository(em).insert(openingEntry);
+          await em.flush();
+        }
+      });
+    } catch (error) {
+      if (
+        error instanceof UniqueConstraintViolationException &&
+        (await this.entityManager.fork().findOne(WalletEntity, {
+          playerId: wallet.playerId,
+          currency: wallet.currency,
+        }))
+      ) {
+        throw new WalletAlreadyExistsError();
+      }
+      throw error;
+    }
+  }
 
   /** Locks transacionais evitam corrida entre instâncias e liberam no commit/rollback. */
   withIdempotencyAndWalletLock<T>(
