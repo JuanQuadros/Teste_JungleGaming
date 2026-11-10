@@ -36,7 +36,11 @@ describe('mapWagerTransactionResponse', () => {
           transactionId: 'transaction-1',
           status,
           code,
-          balance: '12.34',
+          // Espera o saldo no formato Money: valor e moeda.
+          balance: {
+            amount: '12.34',
+            currency: 'BRL',
+          },
           idempotentReplay: false,
         },
       });

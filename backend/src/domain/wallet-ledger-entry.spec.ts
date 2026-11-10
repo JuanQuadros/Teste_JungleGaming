@@ -117,10 +117,9 @@ const createReversal = (
       overrides.referenceTransactionId === undefined
         ? originalTransaction.id
         : overrides.referenceTransactionId,
-    referenceExternalTransactionId:
-      overrides.referenceExternalTransactionId === undefined
-        ? originalTransaction.externalTransactionId
-        : overrides.referenceExternalTransactionId,
+
+// Não duplica a referência com o identificador externo.
+referenceExternalTransactionId: null,
   });
   return WalletLedgerEntry.reverse({
     id: 'reversal-entry-1',
@@ -278,7 +277,7 @@ describe('WalletLedgerEntry', () => {
     expect(originalEntry.balanceAfter.toJSON().amount).toBe('10.00');
   });
 
-  it('ROLLBACK gera novo lançamento oposto para BET, WIN e OPENING', () => {
+  it('ROLLBACK gera lançamento oposto para BET e WIN e rejeita OPENING', () => {
     const bet = createTransaction({ kind: WagerTransactionType.BET });
     const betEntry = createOriginalEntry(bet);
     const win = createTransaction({
@@ -302,11 +301,77 @@ describe('WalletLedgerEntry', () => {
         kind: WagerTransactionType.ROLLBACK,
       }).direction,
     ).toBe(WalletLedgerDirection.DEBIT);
-    expect(
+    expect(() =>
       createReversal(opening, openingEntry, {
         kind: WagerTransactionType.ROLLBACK,
-      }).direction,
-    ).toBe(WalletLedgerDirection.DEBIT);
+      }),
+    ).toThrow(InvalidWalletLedgerEntryError);
+  });
+
+  it('permite ROLLBACK de REFUND e registra um débito vinculado ao crédito', () => {
+    const bet = createTransaction({
+      id: 'rollback-refund-bet',
+      kind: WagerTransactionType.BET,
+      externalTransactionId: 'rollback-refund-bet-external',
+    });
+    const betEntry = createOriginalEntry(bet, money('20.00'));
+    const refund = createTransaction({
+      id: 'rollback-refund',
+      kind: WagerTransactionType.REFUND,
+      externalTransactionId: 'rollback-refund-external',
+      referenceTransactionId: bet.id,
+    });
+    const refundEntry = WalletLedgerEntry.reverse({
+      id: 'rollback-refund-entry',
+      transaction: refund,
+      originalTransaction: bet,
+      originalEntry: betEntry,
+      balanceBefore: money('10.00'),
+      existingReversal: null,
+    });
+    const rollback = createTransaction({
+      id: 'rollback-of-refund',
+      kind: WagerTransactionType.ROLLBACK,
+      externalTransactionId: 'rollback-of-refund-external',
+      referenceTransactionId: refund.id,
+    });
+    const rollbackEntry = WalletLedgerEntry.reverse({
+      id: 'rollback-of-refund-entry',
+      transaction: rollback,
+      originalTransaction: refund,
+      originalEntry: refundEntry,
+      balanceBefore: money('20.00'),
+      existingReversal: null,
+    });
+
+    expect(refundEntry.direction).toBe(WalletLedgerDirection.CREDIT);
+    expect(refundEntry.balanceAfter.toJSON().amount).toBe('20.00');
+    expect(rollbackEntry.direction).toBe(WalletLedgerDirection.DEBIT);
+    expect(rollbackEntry.balanceAfter.toJSON().amount).toBe('10.00');
+    expect(rollbackEntry.reversalOfTransactionId).toBe(refund.id);
+  });
+
+  it('rehydrates and validates immutable ledger entries and their creation time', () => {
+    const entry = createOriginalEntry(createTransaction(), money('20.00'));
+    const snapshot = {
+      id: entry.id,
+      walletId: entry.walletId,
+      transactionId: entry.transactionId,
+      direction: entry.direction,
+      amount: entry.amount,
+      currency: entry.currency,
+      balanceBefore: entry.balanceBefore,
+      balanceAfter: entry.balanceAfter,
+      reversalOfTransactionId: entry.reversalOfTransactionId,
+      createdAt: entry.createdAt,
+    };
+
+    const restored = WalletLedgerEntry.rehydrate(snapshot);
+    expect(restored).toEqual(entry);
+    expect(restored.isBalanced()).toBe(true);
+    expect(() =>
+      WalletLedgerEntry.rehydrate({ ...snapshot, createdAt: new Date('bad') }),
+    ).toThrow(InvalidWalletLedgerEntryError);
   });
 
   it('rejeita referência incompatível, tipo não elegível ou valor parcial', () => {
@@ -320,6 +385,7 @@ describe('WalletLedgerEntry', () => {
     const refund = createTransaction({
       id: 'transaction-refund',
       kind: WagerTransactionType.REFUND,
+      referenceTransactionId: bet.id,
     });
     const refundEntry = WalletLedgerEntry.create({
       id: 'entry-refund',

@@ -24,6 +24,11 @@ export interface WalletLedgerEntryInput {
   balanceBefore: Money;
   balanceAfter: Money;
   reversalOfTransactionId?: string | null;
+  createdAt?: Date;
+}
+
+export interface WalletLedgerEntrySnapshot extends WalletLedgerEntryInput {
+  createdAt: Date;
 }
 
 export interface CreateWalletLedgerEntryInput {
@@ -78,6 +83,7 @@ export class WalletLedgerEntry {
     public readonly balanceBefore: Money,
     public readonly balanceAfter: Money,
     public readonly reversalOfTransactionId: string | null,
+    public readonly createdAt: Date,
   ) {
     Object.freeze(this);
   }
@@ -169,7 +175,6 @@ export class WalletLedgerEntry {
         );
       }
     } else if (
-      originalTransaction.kind !== WagerTransactionType.OPENING &&
       originalTransaction.kind !== WagerTransactionType.BET &&
       originalTransaction.kind !== WagerTransactionType.WIN &&
       originalTransaction.kind !== WagerTransactionType.REFUND
@@ -209,6 +214,7 @@ export class WalletLedgerEntry {
       balanceBefore,
       balanceAfter,
       reversalOfTransactionId: originalTransaction.id,
+      createdAt: new Date(),
     });
   }
 
@@ -269,6 +275,12 @@ export class WalletLedgerEntry {
         'A referência da reversão deve identificar outra transação.',
       );
     }
+    const createdAt = input.createdAt ?? new Date();
+    if (!(createdAt instanceof Date) || Number.isNaN(createdAt.getTime())) {
+      throw new InvalidWalletLedgerEntryError(
+        'A data de criação do lançamento deve ser válida.',
+      );
+    }
 
     const expectedBalance = WalletLedgerEntry.apply(
       input.direction,
@@ -291,7 +303,20 @@ export class WalletLedgerEntry {
       input.balanceBefore,
       input.balanceAfter,
       input.reversalOfTransactionId ?? null,
+      new Date(createdAt),
     );
+  }
+
+  static rehydrate(snapshot: WalletLedgerEntrySnapshot): WalletLedgerEntry {
+    return WalletLedgerEntry.create(snapshot);
+  }
+
+  isBalanced(): boolean {
+    return WalletLedgerEntry.apply(
+      this.direction,
+      this.amount,
+      this.balanceBefore,
+    ).equals(this.balanceAfter);
   }
 
   private static assertProcessed(transaction: WagerTransaction): void {

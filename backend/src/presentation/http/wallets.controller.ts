@@ -26,10 +26,10 @@ import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 
 interface WalletResource {
+  id: string;
   walletId: string;
   playerId: string;
-  currency: string;
-  balance: string;
+  balance: { amount: string; currency: string };
   version: number;
 }
 
@@ -141,10 +141,10 @@ export class WalletsController {
 
   private toResource(wallet: Wallet): WalletResource {
     return {
+      id: wallet.id,
       walletId: wallet.id,
       playerId: wallet.playerId,
-      currency: wallet.currency,
-      balance: wallet.balance.toJSON().amount,
+      balance: wallet.balance.toJSON(),
       version: wallet.version,
     };
   }

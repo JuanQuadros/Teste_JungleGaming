@@ -14,7 +14,7 @@ export interface WagerTransactionHttpResponse {
     transactionId: string;
     status: WagerTransactionStatus;
     code: string;
-    balance: string | null;
+    balance: { amount: string; currency: string } | null;
     idempotentReplay: boolean;
   };
 }
@@ -32,7 +32,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: 'PROCESSED',
-          balance: transaction.responseBalance?.toJSON().amount ?? null,
+          balance: transaction.responseBalance?.toJSON() ?? null,
           idempotentReplay,
         },
       };
@@ -44,7 +44,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: 'PROCESSING_PENDING',
-          balance: transaction.responseBalance?.toJSON().amount ?? null,
+          balance: transaction.responseBalance?.toJSON() ?? null,
           idempotentReplay,
         },
       };
@@ -55,7 +55,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: transaction.failureCode ?? 'WAGER_REJECTED',
-          balance: transaction.responseBalance?.toJSON().amount ?? null,
+          balance: transaction.responseBalance?.toJSON() ?? null,
           idempotentReplay,
         },
       };
@@ -66,7 +66,7 @@ export function mapWagerTransactionResponse(
           transactionId: transaction.id,
           status: transaction.status,
           code: 'PROCESSING_FAILED',
-          balance: transaction.responseBalance?.toJSON().amount ?? null,
+          balance: transaction.responseBalance?.toJSON() ?? null,
           idempotentReplay,
         },
       };

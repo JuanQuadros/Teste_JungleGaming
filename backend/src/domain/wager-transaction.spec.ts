@@ -42,7 +42,15 @@ describe('WagerTransaction', () => {
       WagerTransactionType.REFUND,
       WagerTransactionType.ROLLBACK,
     ]) {
-      const transaction = WagerTransaction.create(createInput({ kind }));
+      const transaction = WagerTransaction.create(
+        createInput({
+          kind,
+          ...(kind === WagerTransactionType.REFUND ||
+          kind === WagerTransactionType.ROLLBACK
+            ? { referenceExternalTransactionId: 'original-transaction' }
+            : {}),
+        }),
+      );
 
       expect(transaction.status).toBe(WagerTransactionStatus.PENDING);
       expect(transaction.failureCode).toBeNull();
@@ -168,6 +176,8 @@ describe('WagerTransaction', () => {
   it('rehydrate restaura um snapshot processado sem reproduzir as transições', () => {
     const snapshot: WagerTransactionSnapshot = {
       ...createInput(),
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      processedAt: new Date('2026-01-01T00:00:01.000Z'),
       status: WagerTransactionStatus.PROCESSED,
       failureCode: null,
       referenceAttempts: 0,
@@ -183,6 +193,8 @@ describe('WagerTransaction', () => {
   it('rejeita snapshots com combinação inválida de estado e código', () => {
     const snapshot: WagerTransactionSnapshot = {
       ...createInput(),
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      processedAt: null,
       status: WagerTransactionStatus.REJECTED,
       failureCode: WagerFailureCode.PROCESSING_FAILED,
     };
@@ -207,5 +219,46 @@ describe('WagerTransaction', () => {
     expect(() =>
       WagerTransaction.create(createInput({ payloadHash: 'inválido' })),
     ).toThrow(InvalidWagerTransactionError);
+  });
+
+  it('exige exatamente uma referência para REFUND e ROLLBACK e rejeita referências em BET', () => {
+    for (const kind of [
+      WagerTransactionType.REFUND,
+      WagerTransactionType.ROLLBACK,
+    ]) {
+      expect(() => WagerTransaction.create(createInput({ kind }))).toThrow(
+        InvalidWagerTransactionError,
+      );
+      expect(() =>
+        WagerTransaction.create(
+          createInput({
+            kind,
+            referenceExternalTransactionId: 'original-external',
+            referenceTransactionId: 'original-internal',
+          }),
+        ),
+      ).toThrow(InvalidWagerTransactionError);
+    }
+
+    expect(() =>
+      WagerTransaction.create(
+        createInput({
+          kind: WagerTransactionType.BET,
+          referenceExternalTransactionId: 'unexpected-reference',
+        }),
+      ),
+    ).toThrow(InvalidWagerTransactionError);
+  });
+
+  it('persists creation and terminal timestamps consistently with transaction status', () => {
+    const transaction = WagerTransaction.create(createInput());
+    expect(transaction.processedAt).toBeNull();
+    const completedAt = new Date(Date.now() + 1_000);
+    transaction.markProcessed(completedAt);
+    expect(transaction.processedAt).toEqual(completedAt);
+    expect(transaction.toSnapshot().createdAt).toBeInstanceOf(Date);
+    expect(
+      WagerTransaction.rehydrate(transaction.toSnapshot()).processedAt,
+    ).toEqual(completedAt);
   });
 });

@@ -43,6 +43,11 @@ import {
   name as versionedOutboxEventsName,
   up as versionedOutboxEventsUp,
 } from './009-versioned-outbox-events.js';
+import {
+  down as transactionTerminalTimestampsDown,
+  name as transactionTerminalTimestampsName,
+  up as transactionTerminalTimestampsUp,
+} from './010-transaction-terminal-timestamps.js';
 
 export const migrations = [
   { name: initialName, up: initialUp, down: initialDown },
@@ -85,5 +90,10 @@ export const migrations = [
     name: versionedOutboxEventsName,
     up: versionedOutboxEventsUp,
     down: versionedOutboxEventsDown,
+  },
+  {
+    name: transactionTerminalTimestampsName,
+    up: transactionTerminalTimestampsUp,
+    down: transactionTerminalTimestampsDown,
   },
 ];

@@ -89,7 +89,7 @@ export class MikroOrmWalletLedgerEntryRepository implements WalletLedgerEntryRep
     const hasMore = rows.length > limit;
     return {
       items: rows.slice(0, limit).map((row) => ({
-        entry: WalletLedgerEntry.create({
+        entry: WalletLedgerEntry.rehydrate({
           id: row.id,
           walletId: row.walletId,
           transactionId: row.transactionId,
@@ -105,6 +105,7 @@ export class MikroOrmWalletLedgerEntryRepository implements WalletLedgerEntryRep
             currency: row.currency,
           }),
           reversalOfTransactionId: row.reversalOfTransactionId,
+          createdAt: new Date(row.createdAt),
         }),
         createdAt: row.createdAt,
         cursorAt: row.cursorAt,

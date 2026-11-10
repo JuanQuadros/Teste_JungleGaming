@@ -25,7 +25,7 @@ import {
 } from '../../application/wager-processing/wager-transaction-request.js';
 import { mapWagerTransactionResponse } from './wager-transaction-response.js';
 
-@Controller('wagering/transactions')
+@Controller()
 export class WageringTransactionsController {
   constructor(
     private readonly submitTransaction: SubmitWagerTransactionUseCase,
@@ -33,7 +33,7 @@ export class WageringTransactionsController {
     private readonly transactions: WagerTransactionRepositoryPort,
   ) {}
 
-  @Post()
+  @Post('wagering/transactions')
   async submit(
     @Body(WagerTransactionRequestPipe) body: WagerTransactionRequestDto,
     @IdempotencyKey(IdempotencyKeyPipe) idempotencyKey: string,
@@ -51,7 +51,7 @@ export class WageringTransactionsController {
     return mapped.body;
   }
 
-  @Get('by-external')
+  @Get('wagering/transactions/by-external')
   async getByExternalIdentity(
     @Query('providerId') providerId?: string,
     @Query('externalTransactionId') externalTransactionId?: string,
@@ -85,7 +85,36 @@ export class WageringTransactionsController {
     return this.toResource(transaction);
   }
 
-  @Get(':transactionId')
+  @Get('providers/:providerId/wagering/transactions/:externalTransactionId')
+  async getByProviderReference(
+    @Param('providerId') providerId: string,
+    @Param('externalTransactionId') externalTransactionId: string,
+  ) {
+    if (providerId.trim().length === 0 || providerId.length > 256) {
+      throw new InvalidWagerRequestError([
+        { field: 'providerId', code: 'NON_EMPTY_STRING_REQUIRED' },
+      ]);
+    }
+    if (
+      externalTransactionId.trim().length === 0 ||
+      externalTransactionId.length > 256
+    ) {
+      throw new InvalidWagerRequestError([
+        {
+          field: 'externalTransactionId',
+          code: 'NON_EMPTY_STRING_REQUIRED',
+        },
+      ]);
+    }
+    const transaction = await this.transactions.findByProviderAndExternalId(
+      providerId,
+      externalTransactionId,
+    );
+    if (!transaction) throw new NotFoundException();
+    return this.toResource(transaction);
+  }
+
+  @Get('wagering/transactions/:transactionId')
   async getById(
     @Param('transactionId', new ParseUUIDPipe()) transactionId: string,
   ) {
@@ -111,7 +140,7 @@ export class WageringTransactionsController {
       referenceTransactionId: transaction.referenceTransactionId,
       status: transaction.status,
       failureCode: transaction.failureCode,
-      balance: transaction.responseBalance?.toJSON().amount ?? null,
+      balance: transaction.responseBalance?.toJSON() ?? null,
     };
   }
 }

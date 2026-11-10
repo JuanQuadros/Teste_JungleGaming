@@ -72,6 +72,7 @@ export interface WagerTransactionData {
   currency: string;
   referenceExternalTransactionId?: string | null;
   referenceTransactionId?: string | null;
+  createdAt?: Date;
 }
 
 /** Entrada aceita para criar uma transação recebida externamente. */
@@ -81,6 +82,8 @@ export type WagerTransactionInput = Omit<WagerTransactionData, 'kind'> & {
 
 /** Estado completo serializável necessário para restaurar a transação persistida. */
 export interface WagerTransactionSnapshot extends WagerTransactionData {
+  createdAt: Date;
+  processedAt: Date | null;
   status: WagerTransactionStatus;
   failureCode: WagerFailureCode | null;
   responseBalance?: Money | null;
@@ -126,6 +129,7 @@ export class WagerTransaction {
   private currentResponseBalance: Money | null;
   private currentReferenceAttempts: number;
   private currentReferenceNextAttemptAt: Date | null;
+  private currentProcessedAt: Date | null;
 
   private constructor(
     public readonly id: string,
@@ -142,17 +146,20 @@ export class WagerTransaction {
     public readonly currency: string,
     public readonly referenceExternalTransactionId: string | null,
     public readonly referenceTransactionId: string | null,
+    public readonly createdAt: Date,
     status: WagerTransactionStatus,
     failureCode: WagerFailureCode | null,
     responseBalance: Money | null,
     referenceAttempts: number,
     referenceNextAttemptAt: Date | null,
+    processedAt: Date | null,
   ) {
     this.currentStatus = status;
     this.currentFailureCode = failureCode;
     this.currentResponseBalance = responseBalance;
     this.currentReferenceAttempts = referenceAttempts;
     this.currentReferenceNextAttemptAt = referenceNextAttemptAt;
+    this.currentProcessedAt = processedAt;
   }
 
   /** Cria uma operação recebida de provedor no estado inicial PENDING. */
@@ -189,6 +196,11 @@ export class WagerTransaction {
       snapshot.referenceAttempts ?? 0,
       snapshot.referenceNextAttemptAt ?? null,
     );
+    WagerTransaction.assertTemporalState(
+      snapshot.createdAt,
+      snapshot.processedAt,
+      snapshot.status,
+    );
 
     return new WagerTransaction(
       snapshot.id,
@@ -205,11 +217,13 @@ export class WagerTransaction {
       snapshot.currency,
       snapshot.referenceExternalTransactionId ?? null,
       snapshot.referenceTransactionId ?? null,
+      new Date(snapshot.createdAt),
       snapshot.status,
       snapshot.failureCode,
       snapshot.responseBalance ?? null,
       snapshot.referenceAttempts ?? 0,
       snapshot.referenceNextAttemptAt ?? null,
+      snapshot.processedAt ? new Date(snapshot.processedAt) : null,
     );
   }
 
@@ -236,6 +250,10 @@ export class WagerTransaction {
     return this.currentReferenceNextAttemptAt
       ? new Date(this.currentReferenceNextAttemptAt)
       : null;
+  }
+
+  get processedAt(): Date | null {
+    return this.currentProcessedAt ? new Date(this.currentProcessedAt) : null;
   }
 
   /** Registra uma única vez o saldo observado durante o processamento da solicitação. */
@@ -287,18 +305,23 @@ export class WagerTransaction {
     this.transitionTo(WagerTransactionStatus.PENDING, [
       WagerTransactionStatus.PENDING_REFERENCE,
     ]);
+    this.currentReferenceNextAttemptAt = null;
   }
 
   /** Marca como processada uma operação aceita pelo fluxo financeiro. */
-  markProcessed(): void {
+  markProcessed(at = new Date()): void {
+    WagerTransaction.assertTerminalTimestamp(at);
     this.transitionTo(WagerTransactionStatus.PROCESSED, [
       WagerTransactionStatus.PENDING,
       WagerTransactionStatus.PENDING_REFERENCE,
     ]);
+    this.currentProcessedAt = new Date(at);
+    this.currentReferenceNextAttemptAt = null;
   }
 
   /** Encerra a operação com um motivo de negócio estável e legível por máquina. */
-  reject(code: WagerRejectionCode): void {
+  reject(code: WagerRejectionCode, at = new Date()): void {
+    WagerTransaction.assertTerminalTimestamp(at);
     if (!REJECTION_CODES.has(code)) {
       throw new InvalidWagerTransactionError(
         `Código de rejeição não reconhecido: ${String(code)}.`,
@@ -309,10 +332,13 @@ export class WagerTransaction {
       WagerTransactionStatus.PENDING_REFERENCE,
     ]);
     this.currentFailureCode = code;
+    this.currentProcessedAt = new Date(at);
+    this.currentReferenceNextAttemptAt = null;
   }
 
   /** Encerra a operação por falha técnica definitiva com código estável. */
-  fail(code: typeof WagerFailureCode.PROCESSING_FAILED): void {
+  fail(code: typeof WagerFailureCode.PROCESSING_FAILED, at = new Date()): void {
+    WagerTransaction.assertTerminalTimestamp(at);
     if (code !== WagerFailureCode.PROCESSING_FAILED) {
       throw new InvalidWagerTransactionError(
         `Código de falha técnica não reconhecido: ${String(code)}.`,
@@ -323,6 +349,8 @@ export class WagerTransaction {
       WagerTransactionStatus.PENDING_REFERENCE,
     ]);
     this.currentFailureCode = code;
+    this.currentProcessedAt = new Date(at);
+    this.currentReferenceNextAttemptAt = null;
   }
 
   /** Indica se o estado já encerra definitivamente o ciclo da transação. */
@@ -345,6 +373,10 @@ export class WagerTransaction {
       kind: this.kind,
       amount: this.amount,
       currency: this.currency,
+      createdAt: new Date(this.createdAt),
+      processedAt: this.currentProcessedAt
+        ? new Date(this.currentProcessedAt)
+        : null,
       referenceExternalTransactionId: this.referenceExternalTransactionId,
       referenceTransactionId: this.referenceTransactionId,
       status: this.currentStatus,
@@ -381,10 +413,12 @@ export class WagerTransaction {
       input.currency,
       input.referenceExternalTransactionId ?? null,
       input.referenceTransactionId ?? null,
+      new Date(input.createdAt ?? new Date()),
       WagerTransactionStatus.PENDING,
       null,
       null,
       0,
+      null,
       null,
     );
   }
@@ -428,6 +462,82 @@ export class WagerTransaction {
     if (data.amount.currency !== data.currency) {
       throw new InvalidWagerTransactionError(
         'A moeda do valor deve corresponder à moeda da transação.',
+      );
+    }
+
+    const hasExternalReference =
+      typeof data.referenceExternalTransactionId === 'string' &&
+      data.referenceExternalTransactionId.trim().length > 0;
+    const hasInternalReference =
+      typeof data.referenceTransactionId === 'string' &&
+      data.referenceTransactionId.trim().length > 0;
+    if (
+      (data.referenceExternalTransactionId != null &&
+        !hasExternalReference) ||
+      (data.referenceTransactionId != null && !hasInternalReference) ||
+      (hasExternalReference && hasInternalReference)
+    ) {
+      throw new InvalidWagerTransactionError(
+        'A transação deve possuir no máximo uma referência válida.',
+      );
+    }
+
+    const requiresReference =
+      data.kind === WagerTransactionType.REFUND ||
+      data.kind === WagerTransactionType.ROLLBACK;
+    if (requiresReference && !hasExternalReference && !hasInternalReference) {
+      throw new InvalidWagerTransactionError(
+        'REFUND e ROLLBACK exigem uma transação de referência.',
+      );
+    }
+    if (
+      !requiresReference &&
+      data.kind !== WagerTransactionType.WIN &&
+      (hasExternalReference || hasInternalReference)
+    ) {
+      throw new InvalidWagerTransactionError(
+        'Este tipo de transação não aceita uma referência.',
+      );
+    }
+    if (
+      data.createdAt !== undefined &&
+      (!(data.createdAt instanceof Date) ||
+        Number.isNaN(data.createdAt.getTime()))
+    ) {
+      throw new InvalidWagerTransactionError(
+        'A data de criação da transação deve ser válida.',
+      );
+    }
+  }
+
+  private static assertTemporalState(
+    createdAt: Date,
+    processedAt: Date | null,
+    status: WagerTransactionStatus,
+  ): void {
+    if (!(createdAt instanceof Date) || Number.isNaN(createdAt.getTime())) {
+      throw new InvalidWagerTransactionError(
+        'A data de criação da transação deve ser válida.',
+      );
+    }
+    const terminal = TERMINAL_STATUSES.has(status);
+    if (
+      (processedAt !== null &&
+        (!(processedAt instanceof Date) ||
+          Number.isNaN(processedAt.getTime()))) ||
+      (terminal !== (processedAt !== null)) ||
+      (processedAt !== null && processedAt.getTime() < createdAt.getTime())
+    ) {
+      throw new InvalidWagerTransactionError(
+        'As datas da transação não correspondem ao seu estado.',
+      );
+    }
+  }
+
+  private static assertTerminalTimestamp(at: Date): void {
+    if (!(at instanceof Date) || Number.isNaN(at.getTime())) {
+      throw new InvalidWagerTransactionError(
+        'A data de encerramento da transação deve ser válida.',
       );
     }
   }
