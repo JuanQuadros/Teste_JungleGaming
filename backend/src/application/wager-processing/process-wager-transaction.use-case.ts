@@ -23,6 +23,9 @@ import {
 } from '../ports/persistence.repositories.js';
 import { IdempotencyConflictError } from './idempotency-conflict.error.js';
 
+export const PENDING_REFERENCE_MAX_RETRIES = 5;
+export const PENDING_REFERENCE_BASE_DELAY_MS = 1_000;
+
 /** Processa uma operação financeira isolada sob transação e lock da wallet. */
 @Injectable()
 export class ProcessWagerTransactionUseCase {
@@ -67,6 +70,78 @@ export class ProcessWagerTransactionUseCase {
     );
   }
 
+  async retryPendingReference(
+    idempotencyKey: string,
+    now = new Date(),
+  ): Promise<WagerTransaction | null> {
+    return this.unitOfWork.withPendingReferenceLock(
+      idempotencyKey,
+      async (context) => {
+        const pending = context.existingIdempotentTransaction;
+        if (
+          !pending ||
+          pending.status !== WagerTransactionStatus.PENDING_REFERENCE
+        ) {
+          return pending;
+        }
+        if (
+          pending.referenceNextAttemptAt &&
+          pending.referenceNextAttemptAt.getTime() > now.getTime()
+        ) {
+          return pending;
+        }
+        if (!context.wallet) {
+          throw new Error(
+            'Wallet ausente ao reprocessar uma referência pendente.',
+          );
+        }
+
+        const reference = pending.referenceTransactionId
+          ? await context.transactions.findById(pending.referenceTransactionId)
+          : pending.referenceExternalTransactionId
+            ? await context.transactions.findByProviderAndExternalId(
+                pending.providerId,
+                pending.referenceExternalTransactionId,
+              )
+            : null;
+
+        if (!reference) {
+          const attempts = pending.referenceAttempts + 1;
+          const expired = attempts >= PENDING_REFERENCE_MAX_RETRIES;
+          const nextAttemptAt = expired
+            ? null
+            : new Date(
+                now.getTime() + PENDING_REFERENCE_BASE_DELAY_MS * 2 ** attempts,
+              );
+          pending.recordReferenceRetry(nextAttemptAt);
+          if (expired) {
+            pending.reject(WagerRejectionCode.REFERENCE_NOT_FOUND);
+            context.outboxEvents.insert({
+              id: randomUUID(),
+              aggregateId: pending.id,
+              eventType: 'WagerTransactionReferenceExpired',
+              payload: {
+                transactionId: pending.id,
+                failureCode: WagerRejectionCode.REFERENCE_NOT_FOUND,
+                attempts,
+              },
+              occurredAt: now,
+            });
+          }
+          await context.transactions.update(pending);
+          return pending;
+        }
+
+        pending.resumeAfterReference();
+        return this.processInsideTransaction(
+          pending.toSnapshot(),
+          { ...context, wallet: context.wallet },
+          pending,
+        );
+      },
+    );
+  }
+
   /** Gera SHA-256 determinístico somente com campos que alteram o significado financeiro. */
   private hashBusinessPayload(snapshot: WagerTransactionSnapshot): string {
     const payload = {
@@ -90,6 +165,7 @@ export class ProcessWagerTransactionUseCase {
   private async processInsideTransaction(
     snapshot: WagerTransactionSnapshot,
     context: WalletTransactionContext,
+    existing?: WagerTransaction,
   ): Promise<WagerTransaction> {
     const { wallet, wallets, transactions, ledgerEntries } = context;
     if (!wallet) {
@@ -104,10 +180,11 @@ export class ProcessWagerTransactionUseCase {
         transactions,
         WagerRejectionCode.INVALID_REFERENCE,
         wallet.balance,
+        existing,
       );
     }
 
-    const processed = WagerTransaction.rehydrate(snapshot);
+    const processed = existing ?? WagerTransaction.rehydrate(snapshot);
     processed.markProcessed();
     const balanceBefore = wallet.balance;
     let entry: WalletLedgerEntry | null = null;
@@ -124,6 +201,7 @@ export class ProcessWagerTransactionUseCase {
               transactions,
               WagerRejectionCode.INSUFFICIENT_BALANCE,
               wallet.balance,
+              existing,
             );
           }
           throw error;
@@ -158,6 +236,7 @@ export class ProcessWagerTransactionUseCase {
           wallet,
           context,
           balanceBefore,
+          existing,
         );
         if (reversal instanceof WagerTransaction) return reversal;
         entry = reversal;
@@ -174,8 +253,14 @@ export class ProcessWagerTransactionUseCase {
 
     if (balanceChanged) await wallets.update(wallet);
     if (entry) ledgerEntries.insert(entry);
-    processed.recordResponseBalance(wallet.balance);
-    transactions.insert(processed);
+    if (processed.responseBalance === null) {
+      processed.recordResponseBalance(wallet.balance);
+    }
+    if (existing) {
+      await transactions.update(processed);
+    } else {
+      transactions.insert(processed);
+    }
     return processed;
   }
 
@@ -186,6 +271,7 @@ export class ProcessWagerTransactionUseCase {
     wallet: Wallet,
     context: WalletTransactionContext,
     balanceBefore: Money,
+    existing?: WagerTransaction,
   ): Promise<WalletLedgerEntry | WagerTransaction> {
     const { transactions, ledgerEntries } = context;
     if (
@@ -197,6 +283,7 @@ export class ProcessWagerTransactionUseCase {
         transactions,
         WagerRejectionCode.INVALID_REFERENCE,
         balanceBefore,
+        existing,
       );
     }
 
@@ -208,7 +295,9 @@ export class ProcessWagerTransactionUseCase {
         );
     if (!original) {
       const pending = WagerTransaction.rehydrate(snapshot);
-      pending.markPendingReference();
+      pending.markPendingReference(
+        new Date(Date.now() + PENDING_REFERENCE_BASE_DELAY_MS),
+      );
       pending.recordResponseBalance(balanceBefore);
       transactions.insert(pending);
       return pending;
@@ -221,6 +310,7 @@ export class ProcessWagerTransactionUseCase {
         transactions,
         WagerRejectionCode.INVALID_REFERENCE,
         balanceBefore,
+        existing,
       );
     }
 
@@ -238,7 +328,13 @@ export class ProcessWagerTransactionUseCase {
       });
     } catch (error) {
       if (error instanceof RollbackWouldCauseNegativeBalanceError) {
-        return this.reject(snapshot, transactions, error.code, balanceBefore);
+        return this.reject(
+          snapshot,
+          transactions,
+          error.code,
+          balanceBefore,
+          existing,
+        );
       }
       if (
         error instanceof InvalidWalletLedgerEntryError ||
@@ -249,6 +345,7 @@ export class ProcessWagerTransactionUseCase {
           transactions,
           WagerRejectionCode.INVALID_REFERENCE,
           balanceBefore,
+          existing,
         );
       }
       throw error;
@@ -256,16 +353,23 @@ export class ProcessWagerTransactionUseCase {
   }
 
   /** Persiste uma rejeição auditável sem modificar saldo ou ledger. */
-  private reject(
+  private async reject(
     snapshot: WagerTransactionSnapshot,
     transactions: WalletTransactionContext['transactions'],
     code: (typeof WagerRejectionCode)[keyof typeof WagerRejectionCode],
     responseBalance: Money,
-  ): WagerTransaction {
+    existing?: WagerTransaction,
+  ): Promise<WagerTransaction> {
     const rejected = WagerTransaction.rehydrate(snapshot);
     rejected.reject(code);
-    rejected.recordResponseBalance(responseBalance);
-    transactions.insert(rejected);
+    if (rejected.responseBalance === null) {
+      rejected.recordResponseBalance(responseBalance);
+    }
+    if (existing) {
+      await transactions.update(rejected);
+    } else {
+      transactions.insert(rejected);
+    }
     return rejected;
   }
 }

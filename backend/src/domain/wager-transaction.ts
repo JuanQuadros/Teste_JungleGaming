@@ -37,6 +37,7 @@ export type WagerTransactionStatus =
 export const WagerRejectionCode = {
   INSUFFICIENT_BALANCE: 'INSUFFICIENT_BALANCE',
   INVALID_REFERENCE: 'INVALID_REFERENCE',
+  REFERENCE_NOT_FOUND: 'REFERENCE_NOT_FOUND',
   ROLLBACK_WOULD_CAUSE_NEGATIVE_BALANCE:
     'ROLLBACK_WOULD_CAUSE_NEGATIVE_BALANCE',
 } as const;
@@ -83,6 +84,8 @@ export interface WagerTransactionSnapshot extends WagerTransactionData {
   status: WagerTransactionStatus;
   failureCode: WagerFailureCode | null;
   responseBalance?: Money | null;
+  referenceAttempts?: number;
+  referenceNextAttemptAt?: Date | null;
 }
 
 /** Erro lançado quando os dados de identidade ou negócio não podem criar uma transação. */
@@ -121,6 +124,8 @@ export class WagerTransaction {
   private currentStatus: WagerTransactionStatus;
   private currentFailureCode: WagerFailureCode | null;
   private currentResponseBalance: Money | null;
+  private currentReferenceAttempts: number;
+  private currentReferenceNextAttemptAt: Date | null;
 
   private constructor(
     public readonly id: string,
@@ -140,10 +145,14 @@ export class WagerTransaction {
     status: WagerTransactionStatus,
     failureCode: WagerFailureCode | null,
     responseBalance: Money | null,
+    referenceAttempts: number,
+    referenceNextAttemptAt: Date | null,
   ) {
     this.currentStatus = status;
     this.currentFailureCode = failureCode;
     this.currentResponseBalance = responseBalance;
+    this.currentReferenceAttempts = referenceAttempts;
+    this.currentReferenceNextAttemptAt = referenceNextAttemptAt;
   }
 
   /** Cria uma operação recebida de provedor no estado inicial PENDING. */
@@ -176,6 +185,10 @@ export class WagerTransaction {
       snapshot.responseBalance ?? null,
       snapshot.currency,
     );
+    WagerTransaction.assertReferenceRetryState(
+      snapshot.referenceAttempts ?? 0,
+      snapshot.referenceNextAttemptAt ?? null,
+    );
 
     return new WagerTransaction(
       snapshot.id,
@@ -195,6 +208,8 @@ export class WagerTransaction {
       snapshot.status,
       snapshot.failureCode,
       snapshot.responseBalance ?? null,
+      snapshot.referenceAttempts ?? 0,
+      snapshot.referenceNextAttemptAt ?? null,
     );
   }
 
@@ -211,6 +226,16 @@ export class WagerTransaction {
   /** Retorna o saldo capturado para compor a resposta original de idempotência. */
   get responseBalance(): Money | null {
     return this.currentResponseBalance;
+  }
+
+  get referenceAttempts(): number {
+    return this.currentReferenceAttempts;
+  }
+
+  get referenceNextAttemptAt(): Date | null {
+    return this.currentReferenceNextAttemptAt
+      ? new Date(this.currentReferenceNextAttemptAt)
+      : null;
   }
 
   /** Registra uma única vez o saldo observado durante o processamento da solicitação. */
@@ -231,10 +256,30 @@ export class WagerTransaction {
   }
 
   /** Marca uma operação aguardando a chegada de sua transação de referência. */
-  markPendingReference(): void {
+  markPendingReference(nextAttemptAt: Date | null = null): void {
+    WagerTransaction.assertReferenceRetryState(
+      this.currentReferenceAttempts,
+      nextAttemptAt,
+    );
     this.transitionTo(WagerTransactionStatus.PENDING_REFERENCE, [
       WagerTransactionStatus.PENDING,
     ]);
+    this.currentReferenceNextAttemptAt =
+      nextAttemptAt === null ? null : new Date(nextAttemptAt);
+  }
+
+  recordReferenceRetry(nextAttemptAt: Date | null): void {
+    if (this.currentStatus !== WagerTransactionStatus.PENDING_REFERENCE) {
+      throw new InvalidWagerTransitionError(
+        this.currentStatus,
+        WagerTransactionStatus.PENDING_REFERENCE,
+      );
+    }
+    const attempts = this.currentReferenceAttempts + 1;
+    WagerTransaction.assertReferenceRetryState(attempts, nextAttemptAt);
+    this.currentReferenceAttempts = attempts;
+    this.currentReferenceNextAttemptAt =
+      nextAttemptAt === null ? null : new Date(nextAttemptAt);
   }
 
   /** Retorna uma operação pendente de referência ao fluxo de processamento. */
@@ -304,6 +349,10 @@ export class WagerTransaction {
       referenceTransactionId: this.referenceTransactionId,
       status: this.currentStatus,
       failureCode: this.currentFailureCode,
+      referenceAttempts: this.currentReferenceAttempts,
+      referenceNextAttemptAt: this.currentReferenceNextAttemptAt
+        ? new Date(this.currentReferenceNextAttemptAt)
+        : null,
       ...(this.currentResponseBalance
         ? { responseBalance: this.currentResponseBalance }
         : {}),
@@ -334,6 +383,8 @@ export class WagerTransaction {
       input.referenceTransactionId ?? null,
       WagerTransactionStatus.PENDING,
       null,
+      null,
+      0,
       null,
     );
   }
@@ -430,6 +481,23 @@ export class WagerTransaction {
     }
   }
 
+  private static assertReferenceRetryState(
+    attempts: number,
+    nextAttemptAt: Date | null,
+  ): void {
+    if (
+      !Number.isSafeInteger(attempts) ||
+      attempts < 0 ||
+      (nextAttemptAt !== null &&
+        (!(nextAttemptAt instanceof Date) ||
+          Number.isNaN(nextAttemptAt.getTime())))
+    ) {
+      throw new InvalidWagerTransactionError(
+        'O estado de tentativas da referência é inválido.',
+      );
+    }
+  }
+
   /** Aplica uma transição somente quando a origem está explicitamente autorizada. */
   private transitionTo(
     target: WagerTransactionStatus,
@@ -441,5 +509,8 @@ export class WagerTransaction {
 
     this.currentStatus = target;
     this.currentFailureCode = null;
+    if (target !== WagerTransactionStatus.PENDING_REFERENCE) {
+      this.currentReferenceNextAttemptAt = null;
+    }
   }
 }

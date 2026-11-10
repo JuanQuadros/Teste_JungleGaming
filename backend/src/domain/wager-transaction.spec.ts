@@ -68,11 +68,17 @@ describe('WagerTransaction', () => {
   it('permite a transição PENDING -> PENDING_REFERENCE -> PENDING', () => {
     const transaction = WagerTransaction.create(createInput());
 
-    transaction.markPendingReference();
+    const firstRetry = new Date('2026-01-01T00:00:01.000Z');
+    transaction.markPendingReference(firstRetry);
     expect(transaction.status).toBe(WagerTransactionStatus.PENDING_REFERENCE);
+    expect(transaction.referenceNextAttemptAt).toEqual(firstRetry);
+
+    transaction.recordReferenceRetry(new Date('2026-01-01T00:00:03.000Z'));
+    expect(transaction.referenceAttempts).toBe(1);
 
     transaction.resumeAfterReference();
     expect(transaction.status).toBe(WagerTransactionStatus.PENDING);
+    expect(transaction.referenceNextAttemptAt).toBeNull();
   });
 
   // O processamento pode concluir uma transação pendente ou cuja referência chegou.
@@ -96,6 +102,7 @@ describe('WagerTransaction', () => {
   it.each([
     WagerRejectionCode.INSUFFICIENT_BALANCE,
     WagerRejectionCode.INVALID_REFERENCE,
+    WagerRejectionCode.REFERENCE_NOT_FOUND,
     WagerRejectionCode.ROLLBACK_WOULD_CAUSE_NEGATIVE_BALANCE,
   ])('rejeita com o código estável %s', (failureCode) => {
     const transaction = WagerTransaction.create(createInput());
@@ -163,6 +170,8 @@ describe('WagerTransaction', () => {
       ...createInput(),
       status: WagerTransactionStatus.PROCESSED,
       failureCode: null,
+      referenceAttempts: 0,
+      referenceNextAttemptAt: null,
     };
 
     const restored = WagerTransaction.rehydrate(snapshot);

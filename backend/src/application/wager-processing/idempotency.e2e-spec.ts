@@ -12,16 +12,33 @@ import { ProcessWagerTransactionUseCase } from './process-wager-transaction.use-
 import { IdempotencyConflictError } from './idempotency-conflict.error.js';
 import { MikroOrmWalletTransactionUnitOfWork } from '../../infrastructure/persistence/mikro-orm-wallet-transaction.unit-of-work.js';
 import { MikroOrmWalletRepository } from '../../infrastructure/persistence/repositories/mikro-orm-wallet.repository.js';
-import { name as initialName, up as initialUp } from '../../migrations/001-initial-structure.js';
-import { name as ledgerName, up as ledgerUp } from '../../migrations/002-ledger-reversals.js';
-import { name as walletVersionName, up as walletVersionUp } from '../../migrations/003-wallet-version-zero.js';
-import { name as responseBalanceName, up as responseBalanceUp } from '../../migrations/004-idempotency-response-balance.js';
+import {
+  name as initialName,
+  up as initialUp,
+} from '../../migrations/001-initial-structure.js';
+import {
+  name as ledgerName,
+  up as ledgerUp,
+} from '../../migrations/002-ledger-reversals.js';
+import {
+  name as walletVersionName,
+  up as walletVersionUp,
+} from '../../migrations/003-wallet-version-zero.js';
+import {
+  name as responseBalanceName,
+  up as responseBalanceUp,
+} from '../../migrations/004-idempotency-response-balance.js';
+import {
+  name as pendingReferenceRetriesName,
+  up as pendingReferenceRetriesUp,
+} from '../../migrations/005-pending-reference-retries.js';
 
 const migrations = [
   { name: initialName, up: initialUp },
   { name: ledgerName, up: ledgerUp },
   { name: walletVersionName, up: walletVersionUp },
   { name: responseBalanceName, up: responseBalanceUp },
+  { name: pendingReferenceRetriesName, up: pendingReferenceRetriesUp },
 ];
 
 describe('Wager idempotency (PostgreSQL)', () => {
@@ -34,9 +51,7 @@ describe('Wager idempotency (PostgreSQL)', () => {
   beforeAll(async () => {
     adminOrm = await MikroORM.init(mikroOrmConfig);
     schemaName = `idempotency_${randomUUID().replaceAll('-', '')}`;
-    await adminOrm.em
-      .getConnection()
-      .execute(`create schema "${schemaName}"`);
+    await adminOrm.em.getConnection().execute(`create schema "${schemaName}"`);
 
     appOrm = await createIsolatedOrm();
     await appOrm.em.transactional(async (em) => {
@@ -87,8 +102,8 @@ describe('Wager idempotency (PostgreSQL)', () => {
   afterAll(async () => {
     await appOrm?.close(true);
     if (adminOrm && schemaName) {
-      await adminOrm
-        .em.getConnection()
+      await adminOrm.em
+        .getConnection()
         .execute(`drop schema "${schemaName}" cascade`);
     }
     await adminOrm?.close(true);
@@ -186,10 +201,12 @@ describe('Wager idempotency (PostgreSQL)', () => {
   }
 
   async function ledgerEntryCount(transactionId: string): Promise<number> {
-    const result = await appOrm.em.getConnection().execute(
-      `select count(*)::int as count from "${schemaName}".wallet_ledger_entries where transaction_id = ?`,
-      [transactionId],
-    );
+    const result = await appOrm.em
+      .getConnection()
+      .execute(
+        `select count(*)::int as count from "${schemaName}".wallet_ledger_entries where transaction_id = ?`,
+        [transactionId],
+      );
     const rows = result as { count: number }[];
     return rows[0].count;
   }

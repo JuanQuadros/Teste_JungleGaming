@@ -3,9 +3,9 @@ import { EntityManager } from '@mikro-orm/postgresql';
 import { Money } from '../../../domain/money.js';
 import {
   WagerTransaction,
+  WagerTransactionStatus,
   type WagerTransactionSnapshot,
   type WagerTransactionType,
-  type WagerTransactionStatus,
   type WagerFailureCode,
 } from '../../../domain/wager-transaction.js';
 import type { WagerTransactionRepositoryPort } from '../../../application/ports/persistence.repositories.js';
@@ -43,6 +43,25 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       externalTransactionId,
     });
     return entity ? this.toDomain(entity) : null;
+  }
+
+  async findDuePendingReferences(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ idempotencyKey: string }>> {
+    const entities = await this.entityManager.find(
+      WagerTransactionEntity,
+      {
+        status: WagerTransactionStatus.PENDING_REFERENCE,
+        referenceNextAttemptAt: { $lte: now },
+      },
+      {
+        fields: ['idempotencyKey'],
+        orderBy: { referenceNextAttemptAt: 'ASC', createdAt: 'ASC', id: 'ASC' },
+        limit,
+      },
+    );
+    return entities.map(({ idempotencyKey }) => ({ idempotencyKey }));
   }
 
   /** Agenda uma transação nova no Unit of Work atual sem confirmar o flush. */
@@ -93,6 +112,8 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
               amount: entity.responseBalance,
               currency: entity.currency,
             }),
+      referenceAttempts: entity.referenceAttempts,
+      referenceNextAttemptAt: entity.referenceNextAttemptAt,
     };
     return WagerTransaction.rehydrate(snapshot);
   }
@@ -119,8 +140,9 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       referenceExternalTransactionId: snapshot.referenceExternalTransactionId,
       referenceTransactionId: snapshot.referenceTransactionId,
       failureCode: snapshot.failureCode,
-      responseBalance:
-        transaction.responseBalance?.toJSON().amount ?? null,
+      responseBalance: transaction.responseBalance?.toJSON().amount ?? null,
+      referenceAttempts: snapshot.referenceAttempts ?? 0,
+      referenceNextAttemptAt: snapshot.referenceNextAttemptAt ?? null,
     };
   }
 }

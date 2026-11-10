@@ -25,6 +25,18 @@ export const WALLET_CREATION_UNIT_OF_WORK = Symbol(
   'WALLET_CREATION_UNIT_OF_WORK',
 );
 
+export interface OutboxEvent {
+  id: string;
+  aggregateId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  occurredAt: Date;
+}
+
+export interface OutboxEventRepositoryPort {
+  insert(event: OutboxEvent): void;
+}
+
 export interface WalletLedgerCursor {
   createdAt: string;
   id: string;
@@ -55,6 +67,10 @@ export interface WagerTransactionRepositoryPort {
     providerId: string,
     externalTransactionId: string,
   ): Promise<WagerTransaction | null>;
+  findDuePendingReferences(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ idempotencyKey: string }>>;
   insert(transaction: WagerTransaction): void;
   update(transaction: WagerTransaction): Promise<void>;
 }
@@ -88,6 +104,7 @@ export interface WalletTransactionContext {
   wallets: WalletRepositoryPort;
   transactions: WagerTransactionRepositoryPort;
   ledgerEntries: WalletLedgerEntryRepositoryPort;
+  outboxEvents: OutboxEventRepositoryPort;
   existingIdempotentTransaction: WagerTransaction | null;
 }
 
@@ -95,6 +112,10 @@ export interface WalletTransactionContext {
 export interface WalletTransactionUnitOfWorkPort {
   withIdempotencyAndWalletLock<T>(
     walletId: string,
+    idempotencyKey: string,
+    operation: (context: WalletTransactionContext) => Promise<T>,
+  ): Promise<T>;
+  withPendingReferenceLock<T>(
     idempotencyKey: string,
     operation: (context: WalletTransactionContext) => Promise<T>,
   ): Promise<T>;

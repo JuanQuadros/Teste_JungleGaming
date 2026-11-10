@@ -7,6 +7,7 @@ import type {
   WalletTransactionUnitOfWorkPort,
 } from '../../application/ports/persistence.repositories.js';
 import { WalletAlreadyExistsError } from '../../application/wallet-management/wallet-already-exists.error.js';
+import { WagerTransactionStatus } from '../../domain/wager-transaction.js';
 import type { Wallet } from '../../domain/wallet.js';
 import type { WagerTransaction } from '../../domain/wager-transaction.js';
 import type { WalletLedgerEntry } from '../../domain/wallet-ledger-entry.js';
@@ -15,6 +16,7 @@ import {
   MikroOrmWalletLedgerEntryRepository,
   MikroOrmWagerTransactionRepository,
   MikroOrmWalletRepository,
+  MikroOrmOutboxEventRepository,
 } from './repositories/index.js';
 import { PersistenceRecordNotFoundError } from './repositories/persistence-record-not-found.error.js';
 
@@ -84,6 +86,9 @@ export class MikroOrmWalletTransactionUnitOfWork
         const ledgerEntries = new MikroOrmWalletLedgerEntryRepository(
           transactionalEntityManager,
         );
+        const outboxEvents = new MikroOrmOutboxEventRepository(
+          transactionalEntityManager,
+        );
         const existingIdempotentTransaction =
           await transactions.findByIdempotencyKey(idempotencyKey);
 
@@ -94,6 +99,7 @@ export class MikroOrmWalletTransactionUnitOfWork
             wallets,
             transactions,
             ledgerEntries,
+            outboxEvents,
             existingIdempotentTransaction,
           });
         }
@@ -114,9 +120,92 @@ export class MikroOrmWalletTransactionUnitOfWork
           wallets,
           transactions,
           ledgerEntries,
+          outboxEvents,
           existingIdempotentTransaction: null,
         });
       },
     );
+  }
+
+  withPendingReferenceLock<T>(
+    idempotencyKey: string,
+    operation: (context: WalletTransactionContext) => Promise<T>,
+  ): Promise<T> {
+    return this.entityManager.transactional(
+      async (transactionalEntityManager) => {
+        await this.acquireIdempotencyLock(
+          transactionalEntityManager,
+          idempotencyKey,
+        );
+
+        const wallets = new MikroOrmWalletRepository(
+          transactionalEntityManager,
+        );
+        const transactions = new MikroOrmWagerTransactionRepository(
+          transactionalEntityManager,
+        );
+        const ledgerEntries = new MikroOrmWalletLedgerEntryRepository(
+          transactionalEntityManager,
+        );
+        const outboxEvents = new MikroOrmOutboxEventRepository(
+          transactionalEntityManager,
+        );
+        const existingIdempotentTransaction =
+          await transactions.findByIdempotencyKey(idempotencyKey);
+
+        if (
+          !existingIdempotentTransaction ||
+          existingIdempotentTransaction.status !==
+            WagerTransactionStatus.PENDING_REFERENCE
+        ) {
+          return operation({
+            wallet: null,
+            wallets,
+            transactions,
+            ledgerEntries,
+            outboxEvents,
+            existingIdempotentTransaction,
+          });
+        }
+
+        await transactionalEntityManager.findOne(
+          WalletEntity,
+          { id: existingIdempotentTransaction.walletId },
+          { lockMode: LockMode.PESSIMISTIC_WRITE },
+        );
+        const wallet = await wallets.findById(
+          existingIdempotentTransaction.walletId,
+        );
+        if (!wallet) {
+          throw new PersistenceRecordNotFoundError(
+            'wallet',
+            existingIdempotentTransaction.walletId,
+          );
+        }
+
+        return operation({
+          wallet,
+          wallets,
+          transactions,
+          ledgerEntries,
+          outboxEvents,
+          existingIdempotentTransaction,
+        });
+      },
+    );
+  }
+
+  private acquireIdempotencyLock(
+    entityManager: EntityManager,
+    idempotencyKey: string,
+  ): Promise<unknown> {
+    return entityManager
+      .getConnection()
+      .execute(
+        'select pg_advisory_xact_lock(hashtextextended(?, 0))',
+        [idempotencyKey],
+        'all',
+        entityManager.getTransactionContext(),
+      );
   }
 }

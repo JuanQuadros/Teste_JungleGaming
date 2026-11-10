@@ -20,6 +20,11 @@ import {
   name as idempotencyResponseBalanceName,
   up as idempotencyResponseBalanceUp,
 } from './004-idempotency-response-balance.js';
+import {
+  down as pendingReferenceRetriesDown,
+  name as pendingReferenceRetriesName,
+  up as pendingReferenceRetriesUp,
+} from './005-pending-reference-retries.js';
 
 const migrationLock = 741_904_202;
 const migrations = [
@@ -38,6 +43,11 @@ const migrations = [
     name: idempotencyResponseBalanceName,
     up: idempotencyResponseBalanceUp,
     down: idempotencyResponseBalanceDown,
+  },
+  {
+    name: pendingReferenceRetriesName,
+    up: pendingReferenceRetriesUp,
+    down: pendingReferenceRetriesDown,
   },
 ];
 

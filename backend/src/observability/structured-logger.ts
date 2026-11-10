@@ -1,9 +1,11 @@
+import { Injectable } from '@nestjs/common';
 import type { LoggerService } from '@nestjs/common';
 import { RequestContext } from './request-context.js';
 
 type LogLevel = 'log' | 'error' | 'warn' | 'debug' | 'verbose' | 'fatal';
 
 /** Emite logs JSON sem anexar stack traces ou payloads das requisições. */
+@Injectable()
 export class StructuredLogger implements LoggerService {
   constructor(private readonly requestContext: RequestContext) {}
 

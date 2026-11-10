@@ -105,9 +105,19 @@ códigos estáveis: 400 `INVALID_REQUEST`, 404 `NOT_FOUND`, 409
 específico, por exemplo `INSUFFICIENT_BALANCE`; o replay conserva status, código
 e saldo observados no processamento original.
 
+Transações REFUND/ROLLBACK sem referência ficam em `PENDING_REFERENCE`. O
+worker consulta pendências a cada segundo e agenda até cinco novas tentativas:
+a primeira após um segundo, e as seguintes após 2, 4, 8 e 16 segundos. Se a
+referência não chegar, a operação termina como `REJECTED` com
+`REFERENCE_NOT_FOUND`, e o evento `WagerTransactionReferenceExpired` é gravado
+na outbox na mesma transação SQL. Se a referência chegar, as regras de tipo,
+valor, provedor, jogador, wallet, moeda e rodada são verificadas antes de
+aplicar a reversão. Reprocessar não duplica lançamentos; o publisher da outbox
+continua pendente de implementação.
+
 ## Migrations
 
-`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–004 criam a estrutura inicial, protegem reversões no ledger, alinham o versionamento da wallet e persistem o saldo da resposta original para replay idempotente.
+`bun run db:migrate` aplica migrations pendentes. `bun run db:migrate:down` reverte a migration mais recente. O executor usa uma transação PostgreSQL e um advisory lock para evitar execuções concorrentes. As migrations 001–005 criam a estrutura inicial, protegem reversões no ledger, alinham o versionamento da wallet, persistem o saldo original do replay e adicionam o agendamento de retries de referências.
 
 ## Testes e compilação
 
@@ -125,7 +135,7 @@ bun run db:migrate
 bun run test:e2e
 ```
 
-Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam idempotência e endpoints HTTP, incluindo payload/header inválidos, respostas de conflito e rejeição, processamento pendente, replay, abertura de wallet e ledger atômicos, consultas e paginação por cursor.
+Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente se o banco ou as migrations necessárias não estiverem acessíveis. Testes PostgreSQL validam idempotência, API HTTP e referências fora de ordem: chegada tardia e resolução, esgotamento das cinco tentativas, evento de expiração único e ausência de lançamentos duplicados.
 
 ## Documentação
 
@@ -133,4 +143,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas e o saldo registrado na resposta original; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints de wallets, ledger e transações. Autenticação, outbox e processamento SQS ainda serão conectados.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados, falhas, saldo original da resposta e retries limitados de referência; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Os marcos 10 e 11 processam operações em transação SQL com lock por wallet, hash SHA-256, replay que preserva a resposta original e conflito para payload divergente. O marco 12 integra os endpoints HTTP e o 14 resolve referências ausentes com backoff e expiração auditável na outbox. Autenticação, publisher da outbox e processamento SQS ainda serão conectados.

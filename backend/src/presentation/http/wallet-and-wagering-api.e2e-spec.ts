@@ -13,6 +13,7 @@ import {
 } from '../../application/ports/persistence.repositories.js';
 import { CreateWalletUseCase } from '../../application/wallet-management/create-wallet.use-case.js';
 import { ProcessWagerTransactionUseCase } from '../../application/wager-processing/process-wager-transaction.use-case.js';
+import { RetryPendingReferencesUseCase } from '../../application/wager-processing/retry-pending-references.use-case.js';
 import { mikroOrmConfig } from '../../mikro-orm.config.js';
 import {
   name as initialName,
@@ -30,6 +31,10 @@ import {
   name as responseBalanceName,
   up as responseBalanceUp,
 } from '../../migrations/004-idempotency-response-balance.js';
+import {
+  name as pendingReferenceRetriesName,
+  up as pendingReferenceRetriesUp,
+} from '../../migrations/005-pending-reference-retries.js';
 import { RequestContext } from '../../observability/request-context.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 import { MikroOrmWalletTransactionUnitOfWork } from '../../infrastructure/persistence/mikro-orm-wallet-transaction.unit-of-work.js';
@@ -40,7 +45,13 @@ import { HttpExceptionFilter } from './http-exception.filter.js';
 import { WageringTransactionsController } from './wagering-transactions.controller.js';
 import { WalletsController } from './wallets.controller.js';
 
-const migrations = [initialUp, ledgerUp, walletVersionUp, responseBalanceUp];
+const migrations = [
+  initialUp,
+  ledgerUp,
+  walletVersionUp,
+  responseBalanceUp,
+  pendingReferenceRetriesUp,
+];
 
 describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
   let adminOrm: MikroORM;
@@ -75,6 +86,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
         ledgerName,
         walletVersionName,
         responseBalanceName,
+        pendingReferenceRetriesName,
       ];
       for (const [index, statements] of migrations.entries()) {
         for (const statement of statements) {
@@ -99,6 +111,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       providers: [
         CreateWalletUseCase,
         ProcessWagerTransactionUseCase,
+        RetryPendingReferencesUseCase,
         {
           provide: WALLET_CREATION_UNIT_OF_WORK,
           useFactory: () =>
@@ -395,6 +408,202 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
       .send(pendingBody)
       .expect(202);
     expect(replay.body).toEqual(pending.body);
+  });
+
+  it('resolves an out-of-order refund once its reference is processed', async () => {
+    const playerId = randomUUID();
+    const wallet = await request(app.getHttpServer())
+      .post('/wallets')
+      .send({ playerId, currency: 'BRL', initialBalance: '50.00' })
+      .expect(201);
+    const referenceExternalTransactionId = `late-reference-${randomUUID()}`;
+    const refundBody = {
+      ...transactionBody(wallet.body.walletId, playerId, '10.00'),
+      kind: 'REFUND',
+      referenceExternalTransactionId,
+    };
+    const refundKey = `out-of-order-refund-${randomUUID()}`;
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', refundKey)
+      .send(refundBody)
+      .expect(202);
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `late-bet-${randomUUID()}`)
+      .send({
+        ...transactionBody(wallet.body.walletId, playerId, '10.00'),
+        externalTransactionId: referenceExternalTransactionId,
+        kind: 'BET',
+      })
+      .expect(200);
+
+    const retry = app.get(RetryPendingReferencesUseCase);
+    expect(await retry.execute(new Date(Date.now() + 10_000))).toBeGreaterThan(
+      0,
+    );
+    const resolved = await request(app.getHttpServer())
+      .get('/wagering/transactions/by-external')
+      .query({
+        providerId: refundBody.providerId,
+        externalTransactionId: refundBody.externalTransactionId,
+      })
+      .expect(200);
+    expect(resolved.body).toMatchObject({
+      status: 'PROCESSED',
+      balance: '50.00',
+    });
+
+    const walletAfterRetry = await request(app.getHttpServer())
+      .get(`/wallets/${wallet.body.walletId}`)
+      .expect(200);
+    expect(walletAfterRetry.body.balance).toBe('50.00');
+    const ledger = await request(app.getHttpServer())
+      .get(`/wallets/${wallet.body.walletId}/ledger`)
+      .expect(200);
+    expect(ledger.body.items).toHaveLength(3);
+    expect(
+      ledger.body.items.filter(
+        ({
+          reversalOfTransactionId,
+        }: {
+          reversalOfTransactionId: string | null;
+        }) => reversalOfTransactionId !== null,
+      ),
+    ).toHaveLength(1);
+    await retry.execute(new Date(Date.now() + 20_000));
+    const ledgerAfterReplay = await request(app.getHttpServer())
+      .get(`/wallets/${wallet.body.walletId}/ledger`)
+      .expect(200);
+    expect(ledgerAfterReplay.body.items).toHaveLength(3);
+  });
+
+  it('rejects a late reference from another round without applying a reversal', async () => {
+    const playerId = randomUUID();
+    const wallet = await request(app.getHttpServer())
+      .post('/wallets')
+      .send({ playerId, currency: 'BRL', initialBalance: '20.00' })
+      .expect(201);
+    const referenceExternalTransactionId = `wrong-round-reference-${randomUUID()}`;
+    const refundBody = {
+      ...transactionBody(wallet.body.walletId, playerId, '5.00'),
+      kind: 'REFUND',
+      roundId: 'refund-round',
+      referenceExternalTransactionId,
+    };
+    const refund = await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `wrong-round-refund-${randomUUID()}`)
+      .send(refundBody)
+      .expect(202);
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', `wrong-round-bet-${randomUUID()}`)
+      .send({
+        ...transactionBody(wallet.body.walletId, playerId, '5.00'),
+        externalTransactionId: referenceExternalTransactionId,
+        roundId: 'different-round',
+      })
+      .expect(200);
+    await app
+      .get(RetryPendingReferencesUseCase)
+      .execute(new Date(Date.now() + 10_000));
+
+    const rejected = await request(app.getHttpServer())
+      .get(`/wagering/transactions/${refund.body.transactionId}`)
+      .expect(200);
+    expect(rejected.body).toMatchObject({
+      status: 'REJECTED',
+      failureCode: 'INVALID_REFERENCE',
+    });
+    const ledger = await request(app.getHttpServer())
+      .get(`/wallets/${wallet.body.walletId}/ledger`)
+      .expect(200);
+    expect(ledger.body.items).toHaveLength(2);
+    expect(
+      ledger.body.items.every(
+        ({
+          reversalOfTransactionId,
+        }: {
+          reversalOfTransactionId: string | null;
+        }) => reversalOfTransactionId === null,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects an unresolved reference after five retries and records one outbox event', async () => {
+    const playerId = randomUUID();
+    const wallet = await request(app.getHttpServer())
+      .post('/wallets')
+      .send({ playerId, currency: 'BRL', initialBalance: '25.00' })
+      .expect(201);
+    const body = {
+      ...transactionBody(wallet.body.walletId, playerId, '5.00'),
+      kind: 'REFUND',
+      referenceExternalTransactionId: `never-arrived-${randomUUID()}`,
+    };
+    const key = `expired-reference-${randomUUID()}`;
+    const pending = await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', key)
+      .send(body)
+      .expect(202);
+
+    const retry = app.get(RetryPendingReferencesUseCase);
+    let now = new Date(Date.now() + 10_000);
+    const parallelRetries = await Promise.all([
+      retry.execute(now),
+      retry.execute(now),
+    ]);
+    expect(parallelRetries.every((count) => count > 0)).toBe(true);
+    const attemptRows = await appOrm.em.getConnection().execute(
+      `select reference_attempts as attempts
+       from "${schemaName}".wager_transactions
+       where id = ?`,
+      [pending.body.transactionId],
+    );
+    const attemptsAfterParallelRetry = attemptRows as { attempts: number }[];
+    expect(attemptsAfterParallelRetry[0].attempts).toBe(1);
+    now = new Date(now.getTime() + 100_000);
+    for (let attempt = 1; attempt < 5; attempt += 1) {
+      expect(await retry.execute(now)).toBeGreaterThan(0);
+      now = new Date(now.getTime() + 100_000);
+    }
+
+    const rejected = await request(app.getHttpServer())
+      .get(`/wagering/transactions/${pending.body.transactionId}`)
+      .expect(200);
+    expect(rejected.body).toMatchObject({
+      status: 'REJECTED',
+      failureCode: 'REFERENCE_NOT_FOUND',
+      balance: '25.00',
+    });
+    const rejectionReplay = await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', key)
+      .send(body)
+      .expect(422);
+    expect(rejectionReplay.body).toMatchObject({
+      code: 'REFERENCE_NOT_FOUND',
+      status: 'REJECTED',
+      balance: '25.00',
+    });
+    const ledger = await request(app.getHttpServer())
+      .get(`/wallets/${wallet.body.walletId}/ledger`)
+      .expect(200);
+    expect(ledger.body.items).toHaveLength(1);
+
+    const outboxResult = await appOrm.em.getConnection().execute(
+      `select count(*)::int as count
+       from "${schemaName}".outbox_messages
+       where aggregate_id = ? and event_type = ?`,
+      [pending.body.transactionId, 'WagerTransactionReferenceExpired'],
+    );
+    const outboxRows = outboxResult as { count: number }[];
+    expect(outboxRows[0].count).toBe(1);
+    expect(await retry.execute(now)).toBe(0);
   });
 
   function transactionBody(walletId: string, playerId: string, amount: string) {

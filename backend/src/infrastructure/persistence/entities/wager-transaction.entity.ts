@@ -100,4 +100,18 @@ export class WagerTransactionEntity {
 
   @Property({ type: 'timestamptz', fieldName: 'processed_at', nullable: true })
   processedAt: Date | null = null;
+
+  @Property({
+    type: 'integer',
+    fieldName: 'reference_attempts',
+    default: 0,
+  })
+  referenceAttempts = 0;
+
+  @Property({
+    type: 'timestamptz',
+    fieldName: 'reference_next_attempt_at',
+    nullable: true,
+  })
+  referenceNextAttemptAt: Date | null = null;
 }
