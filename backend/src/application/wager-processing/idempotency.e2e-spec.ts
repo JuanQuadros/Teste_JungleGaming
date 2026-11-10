@@ -8,6 +8,9 @@ import {
 } from '../../domain/wager-transaction.js';
 import { Wallet } from '../../domain/wallet.js';
 import { mikroOrmConfig } from '../../mikro-orm.config.js';
+import { MetricsService } from '../../observability/metrics.service.js';
+import { RequestContext } from '../../observability/request-context.js';
+import { StructuredLogger } from '../../observability/structured-logger.js';
 import { ProcessWagerTransactionUseCase } from './process-wager-transaction.use-case.js';
 import { SubmitWagerTransactionUseCase } from './submit-wager-transaction.use-case.js';
 import { IdempotencyConflictError } from './idempotency-conflict.error.js';
@@ -174,6 +177,8 @@ describe('Wager idempotency (PostgreSQL)', () => {
       new ProcessWagerTransactionUseCase(
         new MikroOrmWalletTransactionUnitOfWork(appOrm.em.fork()),
       ),
+      new MetricsService(),
+      new StructuredLogger(new RequestContext()),
     );
     const input = {
       providerId: 'inbox-test-provider',

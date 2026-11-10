@@ -11,11 +11,16 @@ interface MetricSample {
 }
 
 interface HistogramGroup {
+  name: string;
   labels: Record<string, string>;
   count: number;
   sum: number;
   buckets: number[];
 }
+
+export type TransactionMetricSource = 'http' | 'sqs' | 'pending_reference';
+export type TransactionMetricStatus =
+  'pending_reference' | 'processed' | 'rejected' | 'failed';
 
 @Injectable()
 export class MetricsService {
@@ -34,8 +39,108 @@ export class MetricsService {
       status_code: String(statusCode),
     };
     this.increment('http_server_requests_total', labels);
-    const key = this.key('http_server_request_duration_seconds', labels);
+    this.observeDuration(
+      'http_server_request_duration_seconds',
+      labels,
+      durationSeconds,
+    );
+  }
+
+  recordHealthCheck(dependency: string, status: 'ok' | 'unavailable'): void {
+    this.increment('health_dependency_checks_total', { dependency, status });
+  }
+
+  recordTransactionStatus(
+    source: TransactionMetricSource,
+    status: TransactionMetricStatus,
+  ): void {
+    this.increment('wager_transactions_total', { source, status });
+  }
+
+  recordDuplicateTransaction(source: 'http' | 'sqs'): void {
+    this.increment('wager_transaction_duplicates_total', { source });
+  }
+
+  recordRetry(
+    source: 'sqs' | 'pending_reference' | 'outbox',
+    result: 'scheduled' | 'succeeded' | 'failed',
+  ): void {
+    this.increment('wager_retries_total', { source, result });
+  }
+
+  recordDeadLetterMessage(): void {
+    this.increment('sqs_dead_letter_messages_total', {});
+  }
+
+  recordLockConflict(lockType: 'idempotency' | 'wallet' | 'outbox'): void {
+    this.increment('database_lock_conflicts_total', { lock_type: lockType });
+  }
+
+  recordTransactionProcessingDuration(
+    source: TransactionMetricSource,
+    status: TransactionMetricStatus,
+    durationSeconds: number,
+  ): void {
+    this.observeDuration(
+      'wager_transaction_processing_duration_seconds',
+      { source, status },
+      durationSeconds,
+    );
+  }
+
+  recordOutboxPublishDelay(delaySeconds: number): void {
+    this.observeDuration('outbox_publish_delay_seconds', {}, delaySeconds);
+  }
+
+  renderPrometheus(): string {
+    const lines = [
+      '# HELP http_server_requests_total Total de requisições HTTP concluídas.',
+      '# TYPE http_server_requests_total counter',
+      ...this.renderCounters('http_server_requests_total'),
+      '# HELP http_server_request_duration_seconds Duração das requisições HTTP em segundos.',
+      '# TYPE http_server_request_duration_seconds histogram',
+      ...this.renderHistograms('http_server_request_duration_seconds'),
+      '# HELP health_dependency_checks_total Total de verificações de dependência do readiness.',
+      '# TYPE health_dependency_checks_total counter',
+      ...this.renderCounters('health_dependency_checks_total'),
+      '# HELP wager_transactions_total Transações financeiras observadas por origem e status.',
+      '# TYPE wager_transactions_total counter',
+      ...this.renderCounters('wager_transactions_total'),
+      '# HELP wager_transaction_duplicates_total Requisições de transação deduplicadas.',
+      '# TYPE wager_transaction_duplicates_total counter',
+      ...this.renderCounters('wager_transaction_duplicates_total'),
+      '# HELP wager_retries_total Tentativas e agendamentos de retry por origem e resultado.',
+      '# TYPE wager_retries_total counter',
+      ...this.renderCounters('wager_retries_total'),
+      '# HELP sqs_dead_letter_messages_total Mensagens encaminhadas para a dead-letter queue.',
+      '# TYPE sqs_dead_letter_messages_total counter',
+      ...this.renderCounters('sqs_dead_letter_messages_total'),
+      '# HELP database_lock_conflicts_total Conflitos de lock detectados por tipo.',
+      '# TYPE database_lock_conflicts_total counter',
+      ...this.renderCounters('database_lock_conflicts_total'),
+      '# HELP wager_transaction_processing_duration_seconds Duração do processamento financeiro em segundos.',
+      '# TYPE wager_transaction_processing_duration_seconds histogram',
+      ...this.renderHistograms('wager_transaction_processing_duration_seconds'),
+      '# HELP outbox_publish_delay_seconds Atraso entre criação do evento e publicação na outbox, em segundos.',
+      '# TYPE outbox_publish_delay_seconds histogram',
+      ...this.renderHistograms('outbox_publish_delay_seconds'),
+    ];
+    return `${lines.join('\n')}\n`;
+  }
+
+  private observeDuration(
+    name: string,
+    labels: Record<string, string>,
+    durationSeconds: number,
+  ): void {
+    if (!Number.isFinite(durationSeconds) || durationSeconds < 0) {
+      throw new RangeError(
+        'A duração da métrica deve ser finita e não negativa.',
+      );
+    }
+    const key = this.key(name, labels);
     const histogram = this.durations.get(key) ?? {
+      name,
       labels,
       count: 0,
       sum: 0,
@@ -47,25 +152,6 @@ export class MetricsService {
       if (durationSeconds <= bucket) histogram.buckets[index] += 1;
     });
     this.durations.set(key, histogram);
-  }
-
-  recordHealthCheck(dependency: string, status: 'ok' | 'unavailable'): void {
-    this.increment('health_dependency_checks_total', { dependency, status });
-  }
-
-  renderPrometheus(): string {
-    const lines = [
-      '# HELP http_server_requests_total Total de requisições HTTP concluídas.',
-      '# TYPE http_server_requests_total counter',
-      ...this.renderCounters('http_server_requests_total'),
-      '# HELP http_server_request_duration_seconds Duração das requisições HTTP em segundos.',
-      '# TYPE http_server_request_duration_seconds histogram',
-      ...this.renderHistogram(),
-      '# HELP health_dependency_checks_total Total de verificações de dependência do readiness.',
-      '# TYPE health_dependency_checks_total counter',
-      ...this.renderCounters('health_dependency_checks_total'),
-    ];
-    return `${lines.join('\n')}\n`;
   }
 
   private increment(name: string, labels: Record<string, string>): void {
@@ -81,38 +167,31 @@ export class MetricsService {
   private renderCounters(name: string): string[] {
     return [...this.counters.values()]
       .filter((sample) => sample.name === name)
-      .map((sample) => this.renderSample(sample.name, sample.labels, sample.value));
+      .map((sample) =>
+        this.renderSample(sample.name, sample.labels, sample.value),
+      );
   }
 
-  private renderHistogram(): string[] {
+  private renderHistograms(name: string): string[] {
     const lines: string[] = [];
-    for (const { labels, count, sum, buckets } of this.durations.values()) {
+    for (const {
+      name: groupName,
+      labels,
+      count,
+      sum,
+      buckets,
+    } of this.durations.values()) {
+      if (groupName !== name) continue;
       for (const [index, bucket] of DURATION_BUCKETS_SECONDS.entries()) {
         const bucketLabels = { ...labels, le: String(bucket) };
         lines.push(
-          this.renderSample(
-            'http_server_request_duration_seconds_bucket',
-            bucketLabels,
-            buckets[index],
-          ),
+          this.renderSample(`${name}_bucket`, bucketLabels, buckets[index]),
         );
       }
       lines.push(
-        this.renderSample(
-          'http_server_request_duration_seconds_bucket',
-          { ...labels, le: '+Inf' },
-          count,
-        ),
-        this.renderSample(
-          'http_server_request_duration_seconds_sum',
-          labels,
-          sum,
-        ),
-        this.renderSample(
-          'http_server_request_duration_seconds_count',
-          labels,
-          count,
-        ),
+        this.renderSample(`${name}_bucket`, { ...labels, le: '+Inf' }, count),
+        this.renderSample(`${name}_sum`, labels, sum),
+        this.renderSample(`${name}_count`, labels, count),
       );
     }
     return lines;
@@ -123,6 +202,7 @@ export class MetricsService {
     labels: Record<string, string>,
     value: number,
   ): string {
+    if (Object.keys(labels).length === 0) return `${name} ${value}`;
     const serializedLabels = Object.entries(labels)
       .map(([key, label]) => `${key}="${this.escapeLabel(label)}"`)
       .join(',');
@@ -143,6 +223,9 @@ export class MetricsService {
   }
 
   private escapeLabel(value: string): string {
-    return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
+    return value
+      .replaceAll('\\', '\\\\')
+      .replaceAll('"', '\\"')
+      .replaceAll('\n', '\\n');
   }
 }

@@ -37,6 +37,7 @@ import {
   up as pendingReferenceRetriesUp,
 } from '../../migrations/005-pending-reference-retries.js';
 import { RequestContext } from '../../observability/request-context.js';
+import { MetricsService } from '../../observability/metrics.service.js';
 import { StructuredLogger } from '../../observability/structured-logger.js';
 import { MikroOrmWalletTransactionUnitOfWork } from '../../infrastructure/persistence/mikro-orm-wallet-transaction.unit-of-work.js';
 import { MikroOrmWalletLedgerEntryRepository } from '../../infrastructure/persistence/repositories/mikro-orm-wallet-ledger-entry.repository.js';
@@ -139,6 +140,7 @@ describe('Wallet and wagering HTTP API (PostgreSQL)', () => {
             new MikroOrmWalletLedgerEntryRepository(appOrm.em.fork()),
         },
         RequestContext,
+        MetricsService,
         StructuredLogger,
       ],
     }).compile();

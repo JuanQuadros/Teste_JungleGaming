@@ -39,4 +39,68 @@ describe('MetricsService', () => {
       'dependency="queue\\"\\\\\\nname"',
     );
   });
+
+  it('exporta métricas de transação, retries, DLQ e conflitos de lock', () => {
+    const metrics = new MetricsService();
+    metrics.recordTransactionStatus('sqs', 'processed');
+    metrics.recordTransactionStatus('http', 'rejected');
+    metrics.recordDuplicateTransaction('sqs');
+    metrics.recordRetry('pending_reference', 'scheduled');
+    metrics.recordRetry('sqs', 'failed');
+    metrics.recordDeadLetterMessage();
+    metrics.recordLockConflict('wallet');
+
+    const output = metrics.renderPrometheus();
+
+    expect(output).toContain(
+      '# HELP wager_transactions_total Transações financeiras observadas por origem e status.',
+    );
+    expect(output).toContain(
+      'wager_transactions_total{source="sqs",status="processed"} 1',
+    );
+    expect(output).toContain(
+      'wager_transactions_total{source="http",status="rejected"} 1',
+    );
+    expect(output).toContain(
+      'wager_transaction_duplicates_total{source="sqs"} 1',
+    );
+    expect(output).toContain(
+      'wager_retries_total{source="pending_reference",result="scheduled"} 1',
+    );
+    expect(output).toContain(
+      'wager_retries_total{source="sqs",result="failed"} 1',
+    );
+    expect(output).toContain('sqs_dead_letter_messages_total 1');
+    expect(output).toContain(
+      'database_lock_conflicts_total{lock_type="wallet"} 1',
+    );
+  });
+
+  it('exporta durações de processamento e atraso da outbox em segundos', () => {
+    const metrics = new MetricsService();
+    metrics.recordTransactionProcessingDuration('sqs', 'processed', 0.02);
+    metrics.recordOutboxPublishDelay(2);
+
+    const output = metrics.renderPrometheus();
+
+    expect(output).toContain(
+      '# HELP wager_transaction_processing_duration_seconds Duração do processamento financeiro em segundos.',
+    );
+    expect(output).toContain(
+      'wager_transaction_processing_duration_seconds_bucket{source="sqs",status="processed",le="0.025"} 1',
+    );
+    expect(output).toContain('outbox_publish_delay_seconds_bucket{le="2.5"} 1');
+    expect(output).toContain('outbox_publish_delay_seconds_sum 2');
+  });
+
+  it('rejeita durações inválidas em vez de exportar medições incorretas', () => {
+    const metrics = new MetricsService();
+
+    expect(() => metrics.recordOutboxPublishDelay(Number.NaN)).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      metrics.recordTransactionProcessingDuration('http', 'failed', -1),
+    ).toThrow(RangeError);
+  });
 });

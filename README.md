@@ -74,7 +74,15 @@ status e duração, sem registrar corpo ou valores financeiros. O cabeçalho
 `X-Correlation-Id` recebido é aceito somente com caracteres e tamanho válidos;
 caso contrário, a aplicação gera um UUID e devolve o identificador na resposta.
 O endpoint `GET /metrics` expõe métricas Prometheus para requisições HTTP,
-latência e verificações de dependências do readiness.
+latência, verificações de dependências do readiness e métricas de negócio.
+`wager_transactions_total` e `wager_transaction_duplicates_total` são
+contadores; `wager_retries_total` registra retries por origem/resultado;
+`sqs_dead_letter_messages_total` conta mensagens na DLQ;
+`database_lock_conflicts_total` conta conflitos detectados.
+`wager_transaction_processing_duration_seconds`,
+`http_server_request_duration_seconds` e `outbox_publish_delay_seconds` são
+histogramas em segundos. `GET /health/live` verifica somente se o processo está
+ativo; `GET /health/ready` verifica PostgreSQL e filas SQS.
 
 A API HTTP inclui:
 
