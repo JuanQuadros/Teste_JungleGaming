@@ -1,5 +1,6 @@
 import type { WalletLedgerEntry } from '../../domain/wallet-ledger-entry.js';
 import type { WagerTransaction } from '../../domain/wager-transaction.js';
+import type { Money } from '../../domain/money.js';
 import type { Wallet } from '../../domain/wallet.js';
 
 /** Token de injeção para o repositório de wallets. */
@@ -75,6 +76,14 @@ export interface WalletLedgerPageItem {
   cursorAt: string;
 }
 
+export interface WalletLedgerReconciliationSnapshot {
+  currency: string;
+  walletBalance: Money;
+  ledgerBalance: Money;
+  entryCount: number;
+  currencyMismatchCount: number;
+}
+
 /** Contrato de persistência usado pela aplicação para localizar e guardar wallets. */
 export interface WalletRepositoryPort {
   findById(id: string): Promise<Wallet | null>;
@@ -113,6 +122,9 @@ export interface WalletLedgerEntryRepositoryPort {
     cursor: WalletLedgerCursor | null,
     limit: number,
   ): Promise<{ items: WalletLedgerPageItem[]; hasMore: boolean }>;
+  reconcileWallet(
+    walletId: string,
+  ): Promise<WalletLedgerReconciliationSnapshot | null>;
   insert(entry: WalletLedgerEntry): void;
 }
 

@@ -30,7 +30,8 @@ O marco 12 expõe `POST /wallets`, `GET /wallets/:walletId`,
 `GET /wallets/:walletId/ledger`, `POST /wagering/transactions`,
 `GET /wagering/transactions/:transactionId` e a consulta por
 `providerId` + `externalTransactionId` em
-`GET /wagering/transactions/by-external`. Os controllers recebem e devolvem
+`GET /wagering/transactions/by-external`. O marco 17 adiciona
+`POST /wallets/:walletId/reconciliation`. Os controllers recebem e devolvem
 contratos HTTP explícitos; entidades MikroORM não são expostas.
 
 Wallets novas começam com saldo zero. Quando `initialBalance` é positivo, a
@@ -40,6 +41,14 @@ mantida no banco e conflitos são retornados como 409 `WALLET_ALREADY_EXISTS`.
 O histórico do ledger usa ordenação estável por timestamp truncado a
 milissegundos e UUID, com cursor opaco Base64URL e limite configurável entre 1
 e 100.
+
+A reconciliação soma os créditos e subtrai os débitos imutáveis do ledger com
+aritmética `NUMERIC` exata, compara o resultado com o saldo materializado e
+retorna ambos os saldos, a diferença (saldo da wallet menos saldo do ledger),
+consistência e quantidade de lançamentos verificados. Uma divergência é
+registrada em log estruturado e na métrica
+`wallet_reconciliations_total`; a operação é somente de leitura e nunca corrige
+automaticamente wallet ou ledger.
 
 A submissão de transações exige `Idempotency-Key`; o pipe valida a chave e o
 payload antes do caso de uso financeiro. `OPENING` permanece interno. A API

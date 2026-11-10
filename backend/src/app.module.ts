@@ -22,6 +22,7 @@ import { WalletsController } from './presentation/http/wallets.controller.js';
 import { WageringTransactionsController } from './presentation/http/wagering-transactions.controller.js';
 import { RetryPendingReferencesUseCase } from './application/wager-processing/retry-pending-references.use-case.js';
 import { PendingReferenceRetryWorker } from './infrastructure/workers/pending-reference-retry.worker.js';
+import { ReconcileWalletUseCase } from './application/wallet-management/reconcile-wallet.use-case.js';
 import { SubmitWagerTransactionUseCase } from './application/wager-processing/submit-wager-transaction.use-case.js';
 import { WagerTransactionSqsConsumer } from './infrastructure/workers/wager-transaction-sqs.consumer.js';
 import { OutboxSqsPublisherWorker } from './infrastructure/workers/outbox-sqs-publisher.worker.js';
@@ -60,6 +61,7 @@ const sqsClientProvider = {
     ProcessWagerTransactionUseCase,
     SubmitWagerTransactionUseCase,
     CreateWalletUseCase,
+    ReconcileWalletUseCase,
     RetryPendingReferencesUseCase,
     PendingReferenceRetryWorker,
     WagerTransactionSqsConsumer,

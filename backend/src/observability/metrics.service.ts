@@ -114,6 +114,9 @@ export class MetricsService {
       '# HELP health_dependency_checks_total Total de verificações de dependência do readiness.',
       '# TYPE health_dependency_checks_total counter',
       ...this.renderCounters('health_dependency_checks_total'),
+      '# HELP wallet_reconciliations_total Total de reconciliações de saldo de wallets.',
+      '# TYPE wallet_reconciliations_total counter',
+      ...this.renderCounters('wallet_reconciliations_total'),
       '# HELP wager_transactions_total Transações financeiras observadas por origem e status.',
       '# TYPE wager_transactions_total counter',
       ...this.renderCounters('wager_transactions_total'),
@@ -165,6 +168,11 @@ export class MetricsService {
     this.durations.set(key, histogram);
   }
 
+  recordWalletReconciliation(isConsistent: boolean): void {
+    this.increment('wallet_reconciliations_total', {
+      result: isConsistent ? 'consistent' : 'inconsistent',
+    });
+  }
   private increment(name: string, labels: Record<string, string>): void {
     const key = this.key(name, labels);
     const sample = this.counters.get(key);

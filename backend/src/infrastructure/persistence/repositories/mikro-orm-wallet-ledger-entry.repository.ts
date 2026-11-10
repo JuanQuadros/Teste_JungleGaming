@@ -5,7 +5,10 @@ import {
   WalletLedgerDirection,
   WalletLedgerEntry,
 } from '../../../domain/wallet-ledger-entry.js';
-import type { WalletLedgerEntryRepositoryPort } from '../../../application/ports/persistence.repositories.js';
+import type {
+  WalletLedgerEntryRepositoryPort,
+  WalletLedgerReconciliationSnapshot,
+} from '../../../application/ports/persistence.repositories.js';
 import type {
   WalletLedgerCursor,
   WalletLedgerPageItem,
@@ -110,6 +113,55 @@ export class MikroOrmWalletLedgerEntryRepository implements WalletLedgerEntryRep
     };
   }
 
+  async reconcileWallet(
+    walletId: string,
+  ): Promise<WalletLedgerReconciliationSnapshot | null> {
+    const schema = this.entityManager.config.getSchema() ?? 'public';
+    const safeSchema = `"${schema.replaceAll('"', '""')}"`;
+    const result = await this.entityManager.getConnection().execute(
+      `select
+        w.currency as currency,
+        w.balance::text as "walletBalance",
+        coalesce(sum(case
+            when l.currency = w.currency and l.direction = 'CREDIT' then l.amount
+            when l.currency = w.currency and l.direction = 'DEBIT' then -l.amount
+            else 0
+          end), 0)::text as "ledgerBalance",
+        count(l.id)::text as "entryCount",
+        count(l.id) filter (
+          where l.currency is not null and l.currency <> w.currency
+        )::text as "currencyMismatchCount"
+      from ${safeSchema}.wallets w
+      left join ${safeSchema}.wallet_ledger_entries l on l.wallet_id = w.id
+      where w.id = ?
+      group by w.id, w.currency, w.balance`,
+      [walletId],
+    );
+    const rows = result as Array<{
+      currency: string;
+      walletBalance: string;
+      ledgerBalance: string;
+      entryCount: string;
+      currencyMismatchCount: string;
+    }>;
+    const row = rows[0];
+    if (!row) return null;
+
+    return {
+      currency: row.currency,
+      walletBalance: Money.from({
+        amount: row.walletBalance,
+        currency: row.currency,
+      }),
+      ledgerBalance: Money.from({
+        amount: row.ledgerBalance,
+        currency: row.currency,
+      }),
+      entryCount: this.parseCount(row.entryCount),
+      currencyMismatchCount: this.parseCount(row.currencyMismatchCount),
+    };
+  }
+
   /** Agenda somente uma inclusão; alterações e exclusões não fazem parte do contrato. */
   insert(entry: WalletLedgerEntry): void {
     const entity = new WalletLedgerEntryEntity();
@@ -146,5 +198,13 @@ export class MikroOrmWalletLedgerEntryRepository implements WalletLedgerEntryRep
       }),
       reversalOfTransactionId: entity.reversalOfTransactionId,
     });
+  }
+
+  private parseCount(value: string): number {
+    const count = Number(value);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error('A contagem de lançamentos excede o limite suportado.');
+    }
+    return count;
   }
 }

@@ -21,6 +21,9 @@ import { Wallet } from '../../domain/wallet.js';
 import { InvalidWagerRequestError } from '../../application/wager-processing/wager-transaction-request.js';
 import { CreateWalletRequestPipe } from './create-wallet-request.pipe.js';
 import type { CreateWalletRequestDto } from './create-wallet-request.dto.js';
+import { ReconcileWalletUseCase } from '../../application/wallet-management/reconcile-wallet.use-case.js';
+import { MetricsService } from '../../observability/metrics.service.js';
+import { StructuredLogger } from '../../observability/structured-logger.js';
 
 interface WalletResource {
   walletId: string;
@@ -46,6 +49,9 @@ export class WalletsController {
     private readonly wallets: WalletRepositoryPort,
     @Inject(WALLET_LEDGER_ENTRY_REPOSITORY)
     private readonly ledger: WalletLedgerEntryRepositoryPort,
+    private readonly reconcileWallet: ReconcileWalletUseCase,
+    private readonly metrics: MetricsService,
+    private readonly logger: StructuredLogger,
   ) {}
 
   @Post()
@@ -93,6 +99,34 @@ export class WalletsController {
               id: lastItem.entry.id,
             })
           : null,
+    };
+  }
+
+  @Post(':walletId/reconciliation')
+  async reconcile(@Param('walletId', new ParseUUIDPipe()) walletId: string) {
+    const result = await this.reconcileWallet.execute(walletId);
+    if (!result) throw new NotFoundException();
+
+    this.metrics.recordWalletReconciliation(result.isConsistent);
+    if (!result.isConsistent) {
+      this.logger.errorEvent('wallet_reconciliation_inconsistent', {
+        walletId: result.walletId,
+        currency: result.currency,
+        walletBalance: result.walletBalance.toJSON().amount,
+        ledgerBalance: result.ledgerBalance.toJSON().amount,
+        difference: result.difference.toJSON().amount,
+        entriesVerified: result.entriesVerified,
+      });
+    }
+
+    return {
+      walletId: result.walletId,
+      currency: result.currency,
+      walletBalance: result.walletBalance.toJSON().amount,
+      ledgerBalance: result.ledgerBalance.toJSON().amount,
+      difference: result.difference.toJSON().amount,
+      isConsistent: result.isConsistent,
+      entriesVerified: result.entriesVerified,
     };
   }
 
