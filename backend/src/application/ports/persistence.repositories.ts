@@ -15,6 +15,11 @@ export const WALLET_LEDGER_ENTRY_REPOSITORY = Symbol(
   'WALLET_LEDGER_ENTRY_REPOSITORY',
 );
 
+/** Token para a unidade de trabalho que bloqueia e transaciona uma wallet. */
+export const WALLET_TRANSACTION_UNIT_OF_WORK = Symbol(
+  'WALLET_TRANSACTION_UNIT_OF_WORK',
+);
+
 /** Contrato de persistência usado pela aplicação para localizar e guardar wallets. */
 export interface WalletRepositoryPort {
   findById(id: string): Promise<Wallet | null>;
@@ -45,4 +50,20 @@ export interface WalletLedgerEntryRepositoryPort {
     originalTransactionId: string,
   ): Promise<WalletLedgerEntry | null>;
   insert(entry: WalletLedgerEntry): void;
+}
+
+/** Repositórios e wallet carregados dentro da mesma transação SQL. */
+export interface WalletTransactionContext {
+  wallet: Wallet;
+  wallets: WalletRepositoryPort;
+  transactions: WagerTransactionRepositoryPort;
+  ledgerEntries: WalletLedgerEntryRepositoryPort;
+}
+
+/** Executa o callback após adquirir lock exclusivo da wallet no PostgreSQL. */
+export interface WalletTransactionUnitOfWorkPort {
+  withLockedWallet<T>(
+    walletId: string,
+    operation: (context: WalletTransactionContext) => Promise<T>,
+  ): Promise<T>;
 }

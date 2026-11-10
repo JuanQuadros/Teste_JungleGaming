@@ -16,6 +16,7 @@ import { MetricsController } from './observability/metrics.controller.js';
 import { MetricsService } from './observability/metrics.service.js';
 import { RequestContext } from './observability/request-context.js';
 import { StructuredLogger } from './observability/structured-logger.js';
+import { ProcessWagerTransactionUseCase } from './application/wager-processing/process-wager-transaction.use-case.js';
 
 // Compartilha o cliente AWS e permite apontá-lo ao LocalStack no ambiente local.
 const sqsClientProvider = {
@@ -40,6 +41,7 @@ const sqsClientProvider = {
   controllers: [AppController, HealthController, MetricsController],
   providers: [
     AppService,
+    ProcessWagerTransactionUseCase,
     sqsClientProvider,
     RequestContext,
     MetricsService,

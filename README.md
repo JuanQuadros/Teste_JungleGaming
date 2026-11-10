@@ -1,6 +1,6 @@
 # Jungle Gaming — Processador Distribuído de Apostas
 
-Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura está preparada; os componentes de domínio `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` existem; e as entidades e repositórios MikroORM foram mapeados. Os casos de uso financeiros ainda não foram implementados.
+Serviço financeiro distribuído para processar transações de apostas recebidas de múltiplos provedores. A infraestrutura está preparada; os componentes de domínio e os repositórios MikroORM estão implementados; e o processamento financeiro já usa uma transação SQL com lock por wallet. API, idempotência e workers ainda estão pendentes.
 
 ## Tecnologias
 
@@ -104,4 +104,4 @@ Os testes e2e carregam `backend/.env` quando disponível e falham explicitamente
 
 ## Estado atual
 
-`Money` representa valores com centavos `BigInt`; `Wallet` protege moeda, saldo não negativo e versão; `WagerTransaction` controla estados explícitos e códigos estáveis de falha; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. Entidades MikroORM mapeiam wallets, apostas, ledger, inbox e outbox. Repositórios convertem os três aggregates financeiros e deixam o flush/commit para os casos de uso. A migration 003 alinha o versionamento da wallet. Idempotência operacional, transações financeiras integradas e processamento assíncrono ainda não foram implementados.
+`Money` usa centavos `BigInt`; `Wallet` protege moeda, saldo e versão; `WagerTransaction` controla estados e falhas; `WalletLedgerEntry` aplica movimentos imutáveis e reversões. O marco 10 processa BET, WIN, LOSS, REFUND e ROLLBACK sob lock exclusivo da wallet, gravando saldo, transação e ledger juntos. Idempotência, API, outbox e processamento SQS ainda serão conectados aos casos de uso.

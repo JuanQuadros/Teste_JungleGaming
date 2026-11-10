@@ -2,7 +2,7 @@
 
 ## Estado e escopo
 
-Este documento registra as decisões que devem orientar a implementação do desafio. A infraestrutura está preparada, os componentes de domínio `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry` existem, e as entidades e repositórios MikroORM foram mapeados. Os casos de uso financeiros e os workers ainda não foram implementados.
+Este documento registra as decisões que devem orientar a implementação do desafio. A infraestrutura está preparada; os componentes de domínio, entidades e repositórios existem; e o processamento financeiro já usa uma transação SQL com lock por wallet. Idempotência, API e workers ainda não foram implementados.
 
 O objetivo é processar operações de apostas de múltiplos provedores com entrega at-least-once, concorrência entre instâncias e recuperação após falhas, preservando a consistência financeira.
 
@@ -34,13 +34,13 @@ Valores entram e saem da API como strings decimais, por exemplo `"25.00"`. O `Mo
 
 `Wallet` é o aggregate que associa identificador e jogador a uma moeda, saldo e versão. A abertura começa com saldo zero e versão zero; crédito e débito aceitam somente valores positivos da mesma moeda e avançam a versão uma vez por alteração aceita. Débito acima do saldo é rejeitado sem alterar estado. O banco usa `INTEGER` para a versão; a wallet valida o limite desse tipo e a migration 003 alinha a versão inicial zero ao schema.
 
-Entidades MikroORM guardam valores `NUMERIC(20, 2)` como strings decimais e mantêm UUIDs como identificadores escalares. Os repositórios convertem valores monetários para `Money` ao ler e de volta para strings ao persistir. Eles agendam mudanças no Unit of Work atual e não fazem `flush` ou `commit`; o caso de uso e a transação SQL controlarão a confirmação no marco 10. O schema continua sendo alterado apenas pelo executor explícito de migrations.
+Entidades MikroORM guardam valores `NUMERIC(20, 2)` como strings decimais e mantêm UUIDs como identificadores escalares. Os repositórios convertem valores monetários para `Money` ao ler e de volta para strings ao persistir. Eles agendam mudanças no Unit of Work atual e não fazem `flush` ou `commit`; o caso de uso e a unidade de trabalho transacional coordenam a confirmação. O schema continua sendo alterado apenas pelo executor explícito de migrations.
 
 ## Transação financeira e concorrência
 
 O PostgreSQL é a autoridade final para concorrência e invariantes. A unidade de serialização é `walletId`; não haverá lock global.
 
-**Estratégia proposta:** dentro de uma transação SQL, bloquear a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`), validar o saldo e referências, gravar a transação e o ledger, atualizar o saldo/versionamento e inserir os eventos na outbox. A transação inteira confirma ou reverte em conjunto. Isso serializa operações concorrentes da mesma wallet e permite que wallets diferentes avancem em paralelo em múltiplas instâncias.
+**Implementado no marco 10:** `MikroOrmWalletTransactionUnitOfWork` abre uma transação SQL e bloqueia a linha da wallet com lock pessimista (`SELECT ... FOR UPDATE`). O caso de uso valida saldo e referências e grava transação, ledger e saldo/versionamento no mesmo Unit of Work. Qualquer erro técnico reverte todas as alterações; operações de negócio rejeitadas ou pendentes são registradas sem movimento de saldo. Wallets diferentes continuam podendo avançar em paralelo. Idempotência e outbox serão acrescentadas nos marcos 11 e 16.
 
 Constraints no banco complementam as validações do domínio: unicidade de wallet por jogador/moeda, idempotência e identidade externa, saldo não negativo, no máximo um lançamento por transação, no máximo uma reversão por lançamento original e imutabilidade do ledger. `WalletLedgerEntry` valida direção, valor e saldos anterior/posterior. BET gera débito; WIN e OPENING processados geram crédito; LOSS e transações não processadas não geram lançamento. REFUND só reverte BET processada; ROLLBACK pode reverter uma operação processada com lançamento original, exceto REFUND e ROLLBACK. Ambos exigem valor integral e referência do mesmo provedor, jogador, wallet, moeda e rodada. A reversão cria um novo lançamento oposto, sem alterar o original. A consistência entre o saldo materializado e a soma do ledger deve ser mantida por cada caso de uso transacional e conferida por reconciliação.
 
@@ -82,7 +82,7 @@ Autenticação não vale pontos no desafio e é opcional. A decisão atual é n�
 
 Migrations são versionadas, transacionais e reversíveis. O executor atual guarda versões em `schema_migrations` e usa advisory lock PostgreSQL para serializar execuções concorrentes.
 
-A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. As entidades e repositórios MikroORM espelham essas tabelas, mas ainda não implementam os casos de uso financeiros nem garantem atomicidade entre agregados.
+A migration `001-initial-structure` cria a estrutura inicial de wallets, transações, ledger, inbox e outbox; `002-ledger-reversals` vincula reversões a lançamentos originais; `003-wallet-version-zero` alinha a versão inicial do banco com o aggregate. O marco 10 usa os repositórios na mesma transação para atualizar wallet, transação e ledger atomicamente. A integração com idempotência e outbox continua pendente.
 
 ## Observabilidade e testes
 
